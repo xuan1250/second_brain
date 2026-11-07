@@ -1,0 +1,56 @@
+llm:
+  provider: openai            # Default active provider: openai | anthropic | deepseek | openai_compatible
+  model_name: gpt-4o          # Active default model (overridden per-provider below or per-request in UI)
+  temperature: 0.0
+  base_url: null
+  providers:
+    openai:
+      model_name: gpt-4o
+      base_url: null
+    anthropic:
+      model_name: claude-sonnet-5-5
+      base_url: null
+    deepseek:
+      model_name: deepseek-v4-pro
+      base_url: null
+    openai_compatible:
+      model_name: glm-4-plus
+      base_url: null          # e.g. https://open.bigmodel.cn/api/paas/v4/ or http://localhost:11434/v1
+
+embedding:
+  provider: local
+  model_name: BAAI/bge-m3
+  dimensions: 1024
+  device: auto
+  fp16: true
+  sparse_mode: auto
+  max_length: 8192
+
+reranker:
+  model_name: ms-marco-MultiBERT-L-12
+  top_n: 6
+  score_threshold: 0.0
+
+chunking:
+  child_max_tokens: 256
+  parent_max_tokens: 1024
+
+ingestion:
+  max_workers: 1
+  max_upload_size_mb: 100
+  device: auto
+  worker_idle_timeout_sec: 60
+  worker_max_tasks: 0
+  clear_cuda_cache_after_indexing: true
+  laya_model_name: convaiinnovations/laya-multilingual
+  enable_llm_classification_fallback: true
+  high_confidence_threshold: 0.85
+
+storage:
+  data_dir: ../data
+  db_dir: ../data/db
+  frontend_dist_dir: ../frontend/dist
+
+qdrant:
+  url: http://localhost:6333
+  collection: second_brain_knowledge

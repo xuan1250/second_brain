@@ -1,0 +1,22 @@
+services:
+  second-brain:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    environment:
+      EMBEDDING_DEVICE: auto
+      EMBEDDING_FP16: "true"
+      EMBEDDING_SPARSE_MODE: auto
+      INGESTION_DEVICE: auto
+      INGESTION_WORKER_IDLE_TIMEOUT_SEC: "60"
+      INGESTION_WORKER_MAX_TASKS: "0"
+      INGESTION_CLEAR_CUDA_CACHE: "true"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

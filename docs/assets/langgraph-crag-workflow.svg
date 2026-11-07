@@ -1,0 +1,450 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1260" width="1600" height="1260">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0a0e17"/>
+      <stop offset="50%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#090d16"/>
+    </linearGradient>
+
+    <!-- Node Gradient Overlays -->
+    <linearGradient id="card-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.95"/>
+    </linearGradient>
+    
+    <linearGradient id="accent-purple" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#c084fc"/>
+    </linearGradient>
+
+    <linearGradient id="accent-cyan" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+
+    <linearGradient id="accent-amber" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#fbbf24"/>
+    </linearGradient>
+
+    <linearGradient id="accent-rose" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f43f5e"/>
+      <stop offset="100%" stop-color="#fb7185"/>
+    </linearGradient>
+
+    <linearGradient id="accent-emerald" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+
+    <linearGradient id="accent-crimson" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ef4444"/>
+      <stop offset="100%" stop-color="#f87171"/>
+    </linearGradient>
+
+    <!-- Glow Filters -->
+    <filter id="glow-purple" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-emerald" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Arrow Markers -->
+    <marker id="arrow-purple" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#c084fc"/>
+    </marker>
+    <marker id="arrow-cyan" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#38bdf8"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#fbbf24"/>
+    </marker>
+    <marker id="arrow-rose" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#fb7185"/>
+    </marker>
+    <marker id="arrow-emerald" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#34d399"/>
+    </marker>
+    <marker id="arrow-crimson" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#f87171"/>
+    </marker>
+    <marker id="arrow-slate" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow-indigo" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#818cf8"/>
+    </marker>
+
+    <!-- Pattern -->
+    <pattern id="grid-dots" width="30" height="30" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#334155" fill-opacity="0.35"/>
+    </pattern>
+  </defs>
+
+  <style>
+    .font-sans { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    .font-mono { font-family: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace; }
+    .title-main { font-size: 23px; font-weight: 800; fill: #f8fafc; letter-spacing: 0.04em; }
+    .subtitle { font-size: 13.5px; font-weight: 500; fill: #94a3b8; }
+    .badge-text { font-size: 11px; font-weight: 600; fill: #cbd5e1; }
+    .node-title { font-size: 16px; font-weight: 700; fill: #f8fafc; }
+    .node-sub { font-size: 11.5px; font-weight: 500; fill: #94a3b8; }
+    .mode-tag { font-size: 10.5px; font-weight: 700; }
+    .mode-desc { font-size: 11.5px; font-weight: 400; fill: #cbd5e1; }
+    .tech-pill { font-size: 10.5px; font-weight: 600; font-family: 'Fira Code', Consolas, monospace; }
+    .decision-text { font-size: 13px; font-weight: 700; fill: #f8fafc; text-anchor: middle; }
+    .edge-label { font-size: 11px; font-weight: 700; font-family: 'Fira Code', monospace; }
+  </style>
+
+  <!-- Background Base -->
+  <rect width="1600" height="1260" fill="url(#bg-grad)"/>
+  <rect width="1600" height="1260" fill="url(#grid-dots)"/>
+
+  <!-- HEADER -->
+  <g transform="translate(60, 25)">
+    <!-- Brand / Title -->
+    <rect x="0" y="0" width="36" height="36" rx="8" fill="#6366f1" fill-opacity="0.2" stroke="#818cf8" stroke-width="1.5"/>
+    <text x="18" y="24" text-anchor="middle" font-size="18">🧠</text>
+    
+    <text x="50" y="20" class="font-sans title-main">SECOND BRAIN &#8212; LANGGRAPH CORRECTIVE RAG (CRAG) WORKFLOW</text>
+    <text x="50" y="40" class="font-sans subtitle">Comprehensive Graph Architecture: Multi-Domain Routing, Federated Hybrid Search, FlashRank, XML Relevance Grading &amp; Epistemic Synthesis</text>
+
+    <!-- Top Badges -->
+    <g transform="translate(1080, 8)">
+      <rect x="0" y="0" width="100" height="24" rx="12" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
+      <text x="50" y="16" class="font-mono badge-text" text-anchor="middle" fill="#a5b4fc">LangGraph v0.2</text>
+
+      <rect x="110" y="0" width="120" height="24" rx="12" fill="#022c22" stroke="#10b981" stroke-width="1"/>
+      <text x="170" y="16" class="font-mono badge-text" text-anchor="middle" fill="#6ee7b7">AsyncSqliteSaver</text>
+
+      <rect x="240" y="0" width="150" height="24" rx="12" fill="#164e63" stroke="#06b6d4" stroke-width="1"/>
+      <text x="315" y="16" class="font-mono badge-text" text-anchor="middle" fill="#67e8f9">Epistemic Triad RRF</text>
+    </g>
+  </g>
+
+  <!-- STATE &amp; PERSISTENCE BANNER -->
+  <g transform="translate(60, 85)">
+    <rect x="0" y="0" width="1480" height="68" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.2"/>
+    <rect x="0" y="0" width="6" height="68" rx="3" fill="#6366f1"/>
+    
+    <text x="24" y="26" class="font-sans" font-size="12.5" font-weight="700" fill="#a5b4fc">PERSISTENT RUNTIME STATE &amp; CHECKPOINTING</text>
+    <text x="24" y="48" class="font-mono" font-size="11" fill="#94a3b8">AgentState = { <tspan fill="#38bdf8">messages</tspan>, <tspan fill="#c084fc">original_query</tspan>, <tspan fill="#fbbf24">domain_filter</tspan>, <tspan fill="#34d399">target_domains</tspan>, <tspan fill="#a5b4fc">domain_queries</tspan>, <tspan fill="#f43f5e">retrieved_chunks</tspan>, <tspan fill="#fbbf24">reranked_chunks</tspan>, <tspan fill="#34d399">graded_chunks</tspan>, <tspan fill="#38bdf8">citations</tspan>, <tspan fill="#94a3b8">steps</tspan> }</text>
+
+    <!-- Checkpoint Info -->
+    <rect x="1130" y="14" width="330" height="40" rx="6" fill="#1e1b4b" fill-opacity="0.6" stroke="#4f46e5" stroke-width="1"/>
+    <text x="1145" y="30" class="font-mono" font-size="11" fill="#c7d2fe">💾 AsyncSqliteSaver: chat_history.db</text>
+    <text x="1145" y="46" class="font-mono" font-size="10" fill="#818cf8">Key: configurable = { "thread_id": "..." }</text>
+  </g>
+
+  <!-- START NODE -->
+  <g transform="translate(60, 185)">
+    <circle cx="28" cy="115" r="22" fill="#065f46" stroke="#10b981" stroke-width="2.5" filter="url(#glow-emerald)"/>
+    <text x="28" y="120" text-anchor="middle" class="font-mono" font-size="12" font-weight="800" fill="#ecfdf5">START</text>
+    <!-- Arrow to rewrite_query -->
+    <path d="M 50 115 L 90 115" stroke="#10b981" stroke-width="2.5" fill="none" marker-end="url(#arrow-emerald)"/>
+  </g>
+
+  <!-- NODE 1: rewrite_query -->
+  <g transform="translate(150, 185)">
+    <!-- Card Frame -->
+    <rect x="0" y="0" width="510" height="235" rx="10" fill="url(#card-grad)" stroke="#8b5cf6" stroke-width="1.8" filter="url(#glow-purple)"/>
+    <rect x="0" y="0" width="510" height="34" rx="10" fill="#581c87" fill-opacity="0.35"/>
+    
+    <!-- Header -->
+    <circle cx="20" cy="17" r="7" fill="#a855f7"/>
+    <text x="35" y="22" class="font-sans node-title">1. rewrite_query</text>
+    <text x="235" y="22" class="font-mono tech-pill" fill="#d8b4fe">[Router, Pre-Classifier &amp; Decomposer]</text>
+    
+    <!-- Sub-pipeline steps -->
+    <g transform="translate(16, 46)">
+      <rect x="0" y="0" width="478" height="38" rx="6" fill="#1e1b4b" fill-opacity="0.7" stroke="#6d28d9" stroke-width="1"/>
+      <text x="10" y="16" class="font-mono" font-size="10.5" fill="#c084fc">① Polysemy &amp; Entity Scan:</text>
+      <text x="175" y="16" class="font-sans" font-size="10.5" fill="#e2e8f0">get_lexicon_matches() + cross-domain entities</text>
+      <text x="10" y="30" class="font-mono" font-size="10.5" fill="#c084fc">② Laya Pre-Score:</text>
+      <text x="135" y="30" class="font-sans" font-size="10.5" fill="#e2e8f0">convaiinnovations/laya-multilingual (primary_domain + conf)</text>
+    </g>
+
+    <!-- Operational Modes in Node 1 -->
+    <g transform="translate(16, 94)">
+      <text x="0" y="12" class="font-sans" font-size="11.5" font-weight="700" fill="#a78bfa">INTERNAL OPERATING MODES &amp; ROUTING LOGIC:</text>
+      
+      <!-- Mode 1A -->
+      <rect x="0" y="20" width="478" height="24" rx="4" fill="#0f172a" stroke="#334155" stroke-width="0.8"/>
+      <text x="8" y="36" class="font-mono mode-tag" fill="#38bdf8">[Mode 1A] Greeting / Meta:</text>
+      <text x="175" y="36" class="font-sans mode-desc">Regex/LLM detection → needs_retrieval=False, routing_mode="direct"</text>
+
+      <!-- Mode 1B -->
+      <rect x="0" y="48" width="478" height="24" rx="4" fill="#0f172a" stroke="#334155" stroke-width="0.8"/>
+      <text x="8" y="64" class="font-mono mode-tag" fill="#a855f7">[Mode 1B] Single Domain:</text>
+      <text x="165" y="64" class="font-sans mode-desc">Target single partition (eng / econ / law / gen), 1 sub-query</text>
+
+      <!-- Mode 1C -->
+      <rect x="0" y="76" width="478" height="24" rx="4" fill="#0f172a" stroke="#334155" stroke-width="0.8"/>
+      <text x="8" y="92" class="font-mono mode-tag" fill="#fbbf24">[Mode 1C] Multi-Domain:</text>
+      <text x="165" y="92" class="font-sans mode-desc">Decomposes cross-domain sub-queries + domain_weights calibration</text>
+
+      <!-- Mode 1D -->
+      <rect x="0" y="104" width="478" height="24" rx="4" fill="#0f172a" stroke="#334155" stroke-width="0.8"/>
+      <text x="8" y="120" class="font-mono mode-tag" fill="#f43f5e">[Mode 1D] Explicit Lock:</text>
+      <text x="165" y="120" class="font-sans mode-desc">User UI filter override (mode="explicit") restricts target domain(s)</text>
+    </g>
+  </g>
+
+  <!-- DECISION 1: _route_after_rewrite -->
+  <g transform="translate(680, 248)">
+    <path d="M 0 54 L 55 0 L 110 54 L 55 108 Z" fill="#1e1b4b" stroke="#a855f7" stroke-width="2" filter="url(#glow-purple)"/>
+    <text x="55" y="50" class="font-mono decision-text">needs_</text>
+    <text x="55" y="66" class="font-mono decision-text">retrieval?</text>
+  </g>
+
+  <!-- Arrow Node 1 -> Decision 1 -->
+  <path d="M 660 302 L 680 302" stroke="#a855f7" stroke-width="2" fill="none" marker-end="url(#arrow-purple)"/>
+
+  <!-- Decision 1 Branch A: False -> direct_reply -->
+  <path d="M 735 248 L 735 220 L 880 220" stroke="#38bdf8" stroke-width="2" fill="none" marker-end="url(#arrow-cyan)"/>
+  <rect x="745" y="208" width="120" height="20" rx="4" fill="#082f49" stroke="#0284c7" stroke-width="1"/>
+  <text x="752" y="222" class="font-mono edge-label" fill="#38bdf8">False (Greeting)</text>
+
+  <!-- NODE 2: direct_reply -->
+  <g transform="translate(880, 185)">
+    <rect x="0" y="0" width="370" height="90" rx="8" fill="url(#card-grad)" stroke="#0284c7" stroke-width="1.6"/>
+    <rect x="0" y="0" width="370" height="28" rx="8" fill="#0c4a6e" fill-opacity="0.4"/>
+    <circle cx="16" cy="14" r="6" fill="#38bdf8"/>
+    <text x="30" y="19" class="font-sans node-title" font-size="14">2. direct_reply</text>
+    <text x="145" y="19" class="font-mono tech-pill" fill="#7dd3fc">[Zero-Retrieval Conversational]</text>
+    
+    <text x="14" y="46" class="font-sans" font-size="11" fill="#cbd5e1">• System Prompt: _DIRECT_REPLY_SYSTEM_PROMPT</text>
+    <text x="14" y="62" class="font-sans" font-size="11" fill="#cbd5e1">• Direct conversational greeting / meta capability answer</text>
+    <text x="14" y="78" class="font-sans" font-size="11" fill="#f43f5e">• Invariant: 0 document lookups, citations: []</text>
+  </g>
+
+  <!-- Arrow direct_reply -> END 1 -->
+  <path d="M 1250 230 L 1310 230" stroke="#0284c7" stroke-width="2" fill="none" marker-end="url(#arrow-cyan)"/>
+  <g transform="translate(1310, 208)">
+    <circle cx="22" cy="22" r="18" fill="#065f46" stroke="#10b981" stroke-width="2"/>
+    <text x="22" y="26" text-anchor="middle" class="font-mono" font-size="10.5" font-weight="800" fill="#ecfdf5">END</text>
+  </g>
+
+  <!-- Decision 1 Branch B: True -> retrieve (loops down to Row 2) -->
+  <path d="M 735 356 L 735 450 L 100 450 L 100 550 L 150 550" stroke="#10b981" stroke-width="2.5" fill="none" marker-end="url(#arrow-emerald)"/>
+  <rect x="580" y="438" width="140" height="22" rx="4" fill="#022c22" stroke="#059669" stroke-width="1"/>
+  <text x="590" y="453" class="font-mono edge-label" fill="#34d399">True (Needs Search)</text>
+
+  <!-- NODE 3: retrieve -->
+  <g transform="translate(150, 470)">
+    <rect x="0" y="0" width="560" height="235" rx="10" fill="url(#card-grad)" stroke="#06b6d4" stroke-width="1.8" filter="url(#glow-cyan)"/>
+    <rect x="0" y="0" width="560" height="34" rx="10" fill="#164e63" fill-opacity="0.4"/>
+    <circle cx="20" cy="17" r="7" fill="#06b6d4"/>
+    <text x="35" y="22" class="font-sans node-title">3. retrieve</text>
+    <text x="125" y="22" class="font-mono tech-pill" fill="#67e8f9">[HybridRetriever: BAAI/bge-m3 + Qdrant]</text>
+
+    <!-- Sub-components -->
+    <g transform="translate(16, 44)">
+      <rect x="0" y="0" width="528" height="34" rx="6" fill="#083344" fill-opacity="0.6" stroke="#0891b2" stroke-width="1"/>
+      <text x="12" y="15" class="font-mono" font-size="10.5" fill="#38bdf8">Hybrid Vector Pipeline:</text>
+      <text x="160" y="15" class="font-sans" font-size="10.5" fill="#e2e8f0">Dense (1024-d FP16, CUDA) + Sparse (BgeM3 / BM25 token weights)</text>
+      <text x="12" y="27" class="font-mono" font-size="10" fill="#94a3b8">Payload Filters: authority_tier &lt;= max_tier | only_current=True | doc_ids filter</text>
+    </g>
+
+    <!-- Operational Modes in Node 3 -->
+    <g transform="translate(16, 88)">
+      <text x="0" y="12" class="font-sans" font-size="11.5" font-weight="700" fill="#22d3ee">RETRIEVAL EXECUTION MODES:</text>
+
+      <!-- Mode 3A -->
+      <rect x="0" y="20" width="528" height="64" rx="4" fill="#0f172a" stroke="#334155" stroke-width="0.8"/>
+      <text x="8" y="35" class="font-mono mode-tag" fill="#22d3ee">[Mode 3A] Federated Domain Scatter-Gather (mode != "explicit"):</text>
+      <text x="16" y="51" class="font-sans mode-desc">• Parallel asyncio.gather queries across target domain partitions in Qdrant</text>
+      <text x="16" y="65" class="font-sans mode-desc">• Injects "general" fallback sub-query (0.5x RRF discount) if not present</text>
+      <text x="16" y="79" class="font-mono mode-desc" fill="#38bdf8">• Calibrated RRF: Score = Σ (dom_weight / (k + rank)) + (1.0/k if entity_match)</text>
+
+      <!-- Mode 3B -->
+      <rect x="0" y="90" width="528" height="38" rx="4" fill="#0f172a" stroke="#334155" stroke-width="0.8"/>
+      <text x="8" y="105" class="font-mono mode-tag" fill="#f59e0b">[Mode 3B] Explicit Partition Lock (mode == "explicit"):</text>
+      <text x="16" y="121" class="font-sans mode-desc">• Strictly filters to chosen domains; strips general fallback unless requested</text>
+    </g>
+  </g>
+
+  <!-- Arrow retrieve -> rerank -->
+  <path d="M 710 585 L 770 585" stroke="#06b6d4" stroke-width="2.5" fill="none" marker-end="url(#arrow-cyan)"/>
+  <rect x="715" y="565" width="50" height="18" rx="3" fill="#082f49" stroke="#0284c7" stroke-width="0.8"/>
+  <text x="720" y="578" class="font-mono" font-size="10" font-weight="700" fill="#38bdf8">20 pts</text>
+
+  <!-- NODE 4: rerank -->
+  <g transform="translate(770, 470)">
+    <rect x="0" y="0" width="490" height="235" rx="10" fill="url(#card-grad)" stroke="#f59e0b" stroke-width="1.8"/>
+    <rect x="0" y="0" width="490" height="34" rx="10" fill="#78350f" fill-opacity="0.35"/>
+    <circle cx="20" cy="17" r="7" fill="#f59e0b"/>
+    <text x="35" y="22" class="font-sans node-title">4. rerank</text>
+    <text x="110" y="22" class="font-mono tech-pill" fill="#fde68a">[Cross-Encoder: ms-marco-MultiBERT-L-12]</text>
+
+    <!-- Sub-components &amp; logic -->
+    <g transform="translate(16, 44)">
+      <rect x="0" y="0" width="458" height="34" rx="6" fill="#451a03" fill-opacity="0.6" stroke="#b45309" stroke-width="1"/>
+      <text x="12" y="15" class="font-mono" font-size="10.5" fill="#fde047">Cross-Attention Scoring:</text>
+      <text x="165" y="15" class="font-sans" font-size="10.5" fill="#e2e8f0">Evaluates query-passage token interactions</text>
+      <text x="12" y="27" class="font-mono" font-size="10" fill="#fbbf24">Pool Trimming: Selects top_n = 6 highest scored candidates</text>
+    </g>
+
+    <!-- Operating Steps in Node 4 -->
+    <g transform="translate(16, 88)">
+      <text x="0" y="12" class="font-sans" font-size="11.5" font-weight="700" fill="#fbbf24">RERANKING SPECIFICATIONS &amp; METADATA PRESERVATION:</text>
+      
+      <rect x="0" y="20" width="458" height="106" rx="4" fill="#0f172a" stroke="#334155" stroke-width="0.8"/>
+      <text x="10" y="38" class="font-sans mode-desc">• <tspan fill="#fde047" font-weight="700">Context Window Expansion:</tspan> Replaces child_text with token-expanded parent_content</text>
+      <text x="10" y="58" class="font-sans mode-desc">• <tspan fill="#fde047" font-weight="700">Provenance Tracking:</tspan> Preserves source_filename, heading_path, page_numbers</text>
+      <text x="10" y="78" class="font-sans mode-desc">• <tspan fill="#fde047" font-weight="700">Epistemic Metadata:</tspan> Carries domain, subdomain, authority_tier, effective_year</text>
+      <text x="10" y="98" class="font-mono mode-desc" fill="#94a3b8">• Output State: reranked_chunks (length &lt;= 6) with normalized relevance scores</text>
+    </g>
+  </g>
+
+  <!-- Arrow rerank -> grade_context (loops down to Row 3) -->
+  <path d="M 1015 705 L 1015 745 L 420 745 L 420 770" stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#arrow-amber)"/>
+  <rect x="680" y="734" width="85" height="20" rx="3" fill="#451a03" stroke="#b45309" stroke-width="0.8"/>
+  <text x="688" y="748" class="font-mono" font-size="10.5" font-weight="700" fill="#fde047">6 Chunks</text>
+
+  <!-- NODE 5: grade_context -->
+  <g transform="translate(150, 770)">
+    <rect x="0" y="0" width="530" height="235" rx="10" fill="url(#card-grad)" stroke="#f43f5e" stroke-width="1.8" filter="url(#glow-purple)"/>
+    <rect x="0" y="0" width="530" height="34" rx="10" fill="#881337" fill-opacity="0.35"/>
+    <circle cx="20" cy="17" r="7" fill="#f43f5e"/>
+    <text x="35" y="22" class="font-sans node-title">5. grade_context</text>
+    <text x="175" y="22" class="font-mono tech-pill" fill="#fda4af">[Corrective RAG Relevance Grader]</text>
+
+    <!-- Sub-steps in Node 5 -->
+    <g transform="translate(16, 44)">
+      <rect x="0" y="0" width="498" height="34" rx="6" fill="#4c0519" fill-opacity="0.6" stroke="#9f1239" stroke-width="1"/>
+      <text x="10" y="15" class="font-mono" font-size="10.5" fill="#f43f5e">Threshold Pre-filter:</text>
+      <text x="145" y="15" class="font-sans" font-size="10.5" fill="#e2e8f0">Drops any candidate with score &lt; score_threshold (default 0.0)</text>
+      <text x="10" y="27" class="font-mono" font-size="10" fill="#fda4af">XML Sanitization: Neutralizes rogue embedded tags into &lt;documents&gt; XML structure</text>
+    </g>
+
+    <!-- Operational Details in Node 5 -->
+    <g transform="translate(16, 88)">
+      <text x="0" y="12" class="font-sans" font-size="11.5" font-weight="700" fill="#fb7185">CORRECTIVE GRADING MECHANISM &amp; INVARIANTS:</text>
+
+      <rect x="0" y="20" width="498" height="106" rx="4" fill="#0f172a" stroke="#334155" stroke-width="0.8"/>
+      <text x="10" y="38" class="font-sans mode-desc">• <tspan fill="#fb7185" font-weight="700">Batched Structured LLM Call:</tspan> Single invoke_structured_output(BatchGradeResult)</text>
+      <text x="10" y="58" class="font-sans mode-desc">• <tspan fill="#fb7185" font-weight="700">Output Schema:</tspan> { "relevant_indices": [1, ...], "reasoning": "..." }</text>
+      <text x="10" y="78" class="font-sans mode-desc">• <tspan fill="#fb7185" font-weight="700">Robust Index Resolution:</tspan> Maps 1-based indices (0-based fallback) back to chunks</text>
+      <text x="10" y="98" class="font-sans mode-desc">• <tspan fill="#fb7185" font-weight="700">Zero Hallucination Gate:</tspan> Rejects chunks lacking factual evidence for user query</text>
+    </g>
+  </g>
+
+  <!-- DECISION 2: _route_after_grade -->
+  <g transform="translate(720, 835)">
+    <path d="M 0 54 L 55 0 L 110 54 L 55 108 Z" fill="#3f0f20" stroke="#f43f5e" stroke-width="2"/>
+    <text x="55" y="50" class="font-mono decision-text">len(graded)</text>
+    <text x="55" y="66" class="font-mono decision-text">&gt; 0 ?</text>
+  </g>
+
+  <!-- Arrow Node 5 -> Decision 2 -->
+  <path d="M 680 889 L 720 889" stroke="#f43f5e" stroke-width="2" fill="none" marker-end="url(#arrow-rose)"/>
+
+  <!-- Decision 2 Branch A: len > 0 -> synthesize -->
+  <path d="M 830 889 L 890 889 L 890 850 L 930 850" stroke="#10b981" stroke-width="2.5" fill="none" marker-end="url(#arrow-emerald)"/>
+  <rect x="835" y="860" width="75" height="20" rx="3" fill="#022c22" stroke="#059669" stroke-width="1"/>
+  <text x="842" y="874" class="font-mono edge-label" fill="#34d399">Yes (&gt;0)</text>
+
+  <!-- NODE 6: synthesize -->
+  <g transform="translate(930, 740)">
+    <rect x="0" y="0" width="530" height="240" rx="10" fill="url(#card-grad)" stroke="#10b981" stroke-width="1.8" filter="url(#glow-emerald)"/>
+    <rect x="0" y="0" width="530" height="34" rx="10" fill="#064e3b" fill-opacity="0.4"/>
+    <circle cx="20" cy="17" r="7" fill="#10b981"/>
+    <text x="35" y="22" class="font-sans node-title">6. synthesize</text>
+    <text x="145" y="22" class="font-mono tech-pill" fill="#6ee7b7">[Evidence-Grounded Epistemic Synthesis]</text>
+
+    <!-- Sub-steps in Node 6 -->
+    <g transform="translate(16, 44)">
+      <rect x="0" y="0" width="498" height="34" rx="6" fill="#022c22" fill-opacity="0.6" stroke="#059669" stroke-width="1"/>
+      <text x="10" y="15" class="font-mono" font-size="10.5" fill="#34d399">Citation Building:</text>
+      <text x="125" y="15" class="font-sans" font-size="10.5" fill="#e2e8f0">Generates [1]..[N] citations referencing doc, page, heading</text>
+      <text x="10" y="27" class="font-mono" font-size="10" fill="#a7f3d0">Guardrail: validate_and_sanitize_citations() strips hallucinated out-of-range markers</text>
+    </g>
+
+    <!-- Operational Modes in Node 6 -->
+    <g transform="translate(16, 88)">
+      <text x="0" y="12" class="font-sans" font-size="11.5" font-weight="700" fill="#34d399">SYNTHESIS GENERATION MODES:</text>
+
+      <!-- Mode 6A -->
+      <rect x="0" y="20" width="498" height="34" rx="4" fill="#0f172a" stroke="#334155" stroke-width="0.8"/>
+      <text x="8" y="35" class="font-mono mode-tag" fill="#38bdf8">[Mode 6A] Standard Grounded Synthesis (&lt; 2 specialized domains):</text>
+      <text x="16" y="48" class="font-sans mode-desc">_SYNTHESIZE_SYSTEM_PROMPT: Direct evidence synthesis with strict inline [k] citations</text>
+
+      <!-- Mode 6B -->
+      <rect x="0" y="60" width="498" height="66" rx="4" fill="#0f172a" stroke="#334155" stroke-width="0.8"/>
+      <text x="8" y="74" class="font-mono mode-tag" fill="#a855f7">[Mode 6B] Epistemic Triad Multi-Domain Synthesis (&gt;= 2 specialized domains):</text>
+      <text x="16" y="88" class="font-sans mode-desc">Enforces 4-Section Report: ⚙️ Engineering | 📈 Economic | ⚖️ Legal | 🔀 Conflict Matrix</text>
+      <text x="16" y="102" class="font-sans mode-desc">Language Adaptive: Detects Vietnamese / English; isolates physical vs cost vs legal rules</text>
+      <text x="16" y="116" class="font-mono mode-desc" fill="#6ee7b7">State preservation: AIMessage.additional_kwargs["citations"] persisted to SQLite</text>
+    </g>
+  </g>
+
+  <!-- Arrow synthesize -> END 2 -->
+  <path d="M 1460 855 L 1500 855" stroke="#10b981" stroke-width="2.5" fill="none" marker-end="url(#arrow-emerald)"/>
+  <g transform="translate(1500, 833)">
+    <circle cx="22" cy="22" r="18" fill="#065f46" stroke="#10b981" stroke-width="2.5" filter="url(#glow-emerald)"/>
+    <text x="22" y="26" text-anchor="middle" class="font-mono" font-size="10.5" font-weight="800" fill="#ecfdf5">END</text>
+  </g>
+
+  <!-- Decision 2 Branch B: len == 0 -> fallback_notice -->
+  <path d="M 775 943 L 775 1060 L 930 1060" stroke="#ef4444" stroke-width="2" fill="none" marker-end="url(#arrow-crimson)"/>
+  <rect x="785" y="990" width="105" height="22" rx="3" fill="#450a0a" stroke="#dc2626" stroke-width="1"/>
+  <text x="792" y="1005" class="font-mono edge-label" fill="#f87171">No (len == 0)</text>
+
+  <!-- NODE 7: fallback_notice -->
+  <g transform="translate(930, 1010)">
+    <rect x="0" y="0" width="530" height="96" rx="8" fill="url(#card-grad)" stroke="#ef4444" stroke-width="1.6"/>
+    <rect x="0" y="0" width="530" height="28" rx="8" fill="#7f1d1d" fill-opacity="0.35"/>
+    <circle cx="16" cy="14" r="6" fill="#ef4444"/>
+    <text x="30" y="19" class="font-sans node-title" font-size="14">7. fallback_notice</text>
+    <text x="160" y="19" class="font-mono tech-pill" fill="#fca5a5">[CRAG Guarded Fallback]</text>
+    
+    <text x="14" y="46" class="font-sans" font-size="11" fill="#cbd5e1">• Triggered when zero retrieved documents contain factual evidence for query</text>
+    <text x="14" y="62" class="font-sans" font-size="11" fill="#fca5a5">• Output: "I could not find sufficient relevant evidence in the indexed knowledge base..."</text>
+    <text x="14" y="78" class="font-sans" font-size="11" fill="#cbd5e1">• Uniform Citation Invariant: returns citations: [] (keeps UI drawer stable)</text>
+  </g>
+
+  <!-- Arrow fallback_notice -> END 3 -->
+  <path d="M 1460 1058 L 1500 1058" stroke="#ef4444" stroke-width="2" fill="none" marker-end="url(#arrow-crimson)"/>
+  <g transform="translate(1500, 1036)">
+    <circle cx="22" cy="22" r="18" fill="#450a0a" stroke="#ef4444" stroke-width="2"/>
+    <text x="22" y="26" text-anchor="middle" class="font-mono" font-size="10.5" font-weight="800" fill="#fca5a5">END</text>
+  </g>
+
+  <!-- BOTTOM INFRASTRUCTURE TRAY -->
+  <g transform="translate(60, 1135)">
+    <rect x="0" y="0" width="1480" height="90" rx="8" fill="#0b1329" stroke="#1e293b" stroke-width="1.2"/>
+    
+    <!-- Infra 1: Qdrant -->
+    <g transform="translate(20, 14)">
+      <rect x="0" y="0" width="460" height="62" rx="6" fill="#0f172a" stroke="#0284c7" stroke-width="1"/>
+      <text x="16" y="24" class="font-sans" font-size="12" font-weight="700" fill="#38bdf8">📦 Qdrant Hybrid Storage</text>
+      <text x="16" y="40" class="font-mono" font-size="10.5" fill="#94a3b8">Collection: second_brain_knowledge (Dense 1024-d + BgeM3 Sparse)</text>
+      <text x="16" y="53" class="font-mono" font-size="10" fill="#64748b">Indexed Payloads: domain, subdomain, authority_tier, is_current</text>
+    </g>
+
+    <!-- Infra 2: SQLite Relational -->
+    <g transform="translate(500, 14)">
+      <rect x="0" y="0" width="460" height="62" rx="6" fill="#0f172a" stroke="#8b5cf6" stroke-width="1"/>
+      <text x="16" y="24" class="font-sans" font-size="12" font-weight="700" fill="#c084fc">🗄️ SQLite Document Database</text>
+      <text x="16" y="40" class="font-mono" font-size="10.5" fill="#94a3b8">Database: second_brain.db (documents, document_chunks)</text>
+      <text x="16" y="53" class="font-mono" font-size="10" fill="#64748b">Taxonomy Tables: domain_lexicon, cross_domain_entities</text>
+    </g>
+
+    <!-- Infra 3: LangGraph Checkpoints -->
+    <g transform="translate(980, 14)">
+      <rect x="0" y="0" width="480" height="62" rx="6" fill="#0f172a" stroke="#10b981" stroke-width="1"/>
+      <text x="16" y="24" class="font-sans" font-size="12" font-weight="700" fill="#34d399">⚡ Checkpointer &amp; Chat History</text>
+      <text x="16" y="40" class="font-mono" font-size="10.5" fill="#94a3b8">Database: chat_history.db (AsyncSqliteSaver checkpoints)</text>
+      <text x="16" y="53" class="font-mono" font-size="10" fill="#64748b">Thread Invariants: citations, steps, routing metadata preserved</text>
+    </g>
+  </g>
+</svg>

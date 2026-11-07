@@ -1,0 +1,47 @@
+name: second-brain
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333 && printf \"GET /readyz HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  second-brain:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      DATA_DIR: /app/data
+      DB_DIR: /app/data/db
+      FRONTEND_DIST_DIR: /app/frontend/dist
+      HF_HOME: /app/data/models/huggingface
+      TORCH_HOME: /app/data/models/torch
+      FASTEMBED_CACHE_PATH: /app/data/models/fastembed
+    volumes:
+      - ./data:/app/data
+      - app_db:/app/data/db
+      - ./backend/config.yaml:/app/backend/config.yaml:ro
+      - ./backend/.env:/app/backend/.env:ro
+    restart: unless-stopped
+
+volumes:
+  qdrant_storage: {}
+  app_db: {}
+

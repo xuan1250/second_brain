@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: rgba(100, 116, 139, 0.45);
+    border-radius: 9999px;
+  }
+}
+
+@keyframes citation-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.65);
+    background-color: rgba(99, 102, 241, 0.22);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(99, 102, 241, 0);
+    background-color: rgba(99, 102, 241, 0.35);
+  }
+}
+
+.citation-pulse-highlight {
+  animation: citation-pulse 1.8s ease-in-out 3;
+  border-radius: 0.375rem;
+  outline: 2px solid rgba(129, 140, 248, 0.85);
+  background-color: rgba(99, 102, 241, 0.18);
+}
+
+/* react-pdf text/annotation layer baseline styles */
+.react-pdf__Page {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  background-color: #ffffff;
+  border-radius: 0.375rem;
+  overflow: hidden;
+}
+
+.react-pdf__Page__canvas {
+  display: block;
+  user-select: none;
+}
+
+.react-pdf__Page__textContent {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 2;
+}
+
+.react-pdf__Page__textContent span,
+.react-pdf__Page__textContent br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+
+.react-pdf__Page__textContent mark.pdf-citation-mark {
+  background-color: rgba(250, 204, 21, 0.45);
+  color: transparent;
+  border-bottom: 2px solid rgba(234, 179, 8, 0.95);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.react-pdf__Page__annotations {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
