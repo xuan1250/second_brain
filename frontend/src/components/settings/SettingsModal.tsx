@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
@@ -8,12 +8,16 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Eye,
+  EyeOff,
+  Key,
   Layers,
   Loader2,
   Lock,
   Plus,
   Search,
   Settings,
+  ShieldCheck,
   Sliders,
   Trash2,
   X,
@@ -29,6 +33,7 @@ import {
   useUpdateDomainMutation,
   useUpdateWorkspaceSettingsMutation,
   useUpsertLexiconMutation,
+  useVerifyLlmKeyMutation,
   useWorkspaceSettingsQuery,
 } from "../../hooks/useDomains";
 import {
@@ -77,6 +82,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const upsertLexiconMutation = useUpsertLexiconMutation();
   const deleteLexiconMutation = useDeleteLexiconMutation();
   const updateSettingsMutation = useUpdateWorkspaceSettingsMutation();
+  const verifyKeyMutation = useVerifyLlmKeyMutation();
 
   // Active Tab
   const [activeTab, setActiveTab] = useState<string>(initialTab);
@@ -143,11 +149,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [confidenceThreshold, setConfidenceThreshold] = useState<number>(0.85);
   const [llmProvider, setLlmProvider] = useState<string>("");
   const [llmModel, setLlmModel] = useState<string>("");
+  const [compatBaseUrl, setCompatBaseUrl] = useState<string>("");
+  const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
+  const [revealedKeys, setRevealedKeys] = useState<Record<string, boolean>>({});
+  const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
+  const [verifyFeedback, setVerifyFeedback] = useState<
+    Record<string, { valid: boolean; message: string }>
+  >({});
   const [settingsSuccessMsg, setSettingsSuccessMsg] = useState<string | null>(null);
 
-  // Sync settings when loaded
+  const prevOpenRef = useRef(false);
+  const hasHydratedRef = useRef(false);
+
+  // Switch tab when modal opens or initialTab changes
   useEffect(() => {
-    if (wsSettings) {
+    if (open && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [open, initialTab]);
+
+  // Form Hydration Guard: Only reset settings when modal opens or first loads while open
+  useEffect(() => {
+    const justOpened = open && !prevOpenRef.current;
+    prevOpenRef.current = open;
+
+    if (!open) {
+      hasHydratedRef.current = false;
+      return;
+    }
+
+    if (wsSettings && (justOpened || !hasHydratedRef.current)) {
       setUploadMode(
         (wsSettings.default_upload_mode as "auto" | "gpu" | "fast") || "fast"
       );
@@ -160,8 +191,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setConfidenceThreshold(wsSettings.high_confidence_threshold ?? 0.85);
       setLlmProvider(wsSettings.default_llm_provider || "");
       setLlmModel(wsSettings.default_llm_model || "");
+      setCompatBaseUrl(wsSettings.llm_compat_base_url || "");
+      hasHydratedRef.current = true;
     }
-  }, [wsSettings]);
+  }, [open, wsSettings]);
+
+  // Active default provider and validation status for Tab 3 alert banner
+  const activeDefaultProv =
+    llmProvider || wsSettings?.default_llm_provider || "openai";
+  const matchingOption = (wsSettings?.available_providers ?? []).find(
+    (p) => p.provider === activeDefaultProv
+  );
+  const isMissingActiveKey = Boolean(
+    matchingOption && !matchingOption.configured
+  );
+  const isInvalidActiveKey = Boolean(
+    matchingOption && matchingOption.validation_status === "invalid"
+  );
 
   // Active top-level domain count
   const activeDomainsCount = useMemo(
@@ -413,23 +459,129 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   // Settings Handlers
+  const handleVerifyKey = async (provId: string) => {
+    setVerifyingProvider(provId);
+    setVerifyFeedback((prev) => {
+      const next = { ...prev };
+      delete next[provId];
+      return next;
+    });
+    try {
+      const draftKey = apiKeyDrafts[provId]?.trim() || null;
+      const isDefaultProv =
+        provId === (llmProvider || wsSettings?.default_llm_provider || "openai");
+      const modelParam = isDefaultProv
+        ? (llmModel.trim() || undefined)
+        : undefined;
+      const baseUrlParam =
+        provId === "openai_compatible" ? (compatBaseUrl.trim() || null) : null;
+
+      const res = await verifyKeyMutation.mutateAsync({
+        provider: provId,
+        api_key: draftKey,
+        model: modelParam,
+        base_url: baseUrlParam,
+        save_if_valid: true,
+      });
+
+      if (res.valid) {
+        setVerifyFeedback((prev) => ({
+          ...prev,
+          [provId]: {
+            valid: true,
+            message: "✓ Key verified & saved successfully",
+          },
+        }));
+        setApiKeyDrafts((prev) => {
+          const next = { ...prev };
+          delete next[provId];
+          return next;
+        });
+      } else {
+        setVerifyFeedback((prev) => ({
+          ...prev,
+          [provId]: {
+            valid: false,
+            message: res.validation_error || "Verification failed",
+          },
+        }));
+      }
+    } catch (err: unknown) {
+      setVerifyFeedback((prev) => ({
+        ...prev,
+        [provId]: {
+          valid: false,
+          message:
+            err instanceof Error ? err.message : "Verification error",
+        },
+      }));
+    } finally {
+      setVerifyingProvider(null);
+    }
+  };
+
+  const handleClearUiKey = async (provId: string) => {
+    try {
+      await updateSettingsMutation.mutateAsync({
+        api_keys: { [provId]: "" },
+      });
+      setApiKeyDrafts((prev) => {
+        const next = { ...prev };
+        delete next[provId];
+        return next;
+      });
+      setVerifyFeedback((prev) => ({
+        ...prev,
+        [provId]: {
+          valid: true,
+          message: "UI key cleared; reverted to .env fallback.",
+        },
+      }));
+    } catch (err: unknown) {
+      setVerifyFeedback((prev) => ({
+        ...prev,
+        [provId]: {
+          valid: false,
+          message:
+            err instanceof Error ? err.message : "Failed to clear UI key",
+        },
+      }));
+    }
+  };
+
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSettingsSuccessMsg(null);
     try {
+      const apiKeysPayload: Record<string, string | null> = {};
+      for (const [p, k] of Object.entries(apiKeyDrafts)) {
+        if (k && k.trim()) {
+          apiKeysPayload[p] = k.trim();
+        }
+      }
+
       const updated = await updateSettingsMutation.mutateAsync({
         default_upload_mode: uploadMode,
         default_approval_mode: approvalMode,
         high_confidence_threshold: confidenceThreshold,
         default_llm_provider: llmProvider || null,
         default_llm_model: llmModel || null,
+        llm_compat_base_url: compatBaseUrl.trim() || null,
+        ...(Object.keys(apiKeysPayload).length > 0
+          ? { api_keys: apiKeysPayload }
+          : {}),
       });
       setSelectedProvider(updated.default_llm_provider || "");
       setSelectedModel(updated.default_llm_model || "");
+      setApiKeyDrafts({});
       setSettingsSuccessMsg("Workspace defaults saved successfully.");
       setTimeout(() => setSettingsSuccessMsg(null), 3000);
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : "Failed to update workspace settings.");
+      alert(
+        err instanceof Error
+          ? err.message
+          : "Failed to update workspace settings."
+      );
     }
   };
 
@@ -496,7 +648,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
               <Tabs.Trigger
                 value="ingestion"
-                className={`flex items-center gap-2 rounded-lg px-3 py-1.5 transition ${
+                className={`relative flex items-center gap-2 rounded-lg px-3 py-1.5 transition ${
                   activeTab === "ingestion"
                     ? "bg-indigo-600 text-white font-semibold shadow-xs"
                     : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
@@ -504,6 +656,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 <Sliders className="h-3.5 w-3.5" />
                 <span>Ingestion & AI Defaults</span>
+                {(isMissingActiveKey || isInvalidActiveKey) && (
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      isInvalidActiveKey ? "bg-rose-500 animate-pulse" : "bg-amber-400"
+                    }`}
+                  />
+                )}
               </Tabs.Trigger>
             </Tabs.List>
 
@@ -1234,6 +1393,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               )}
 
+              {/* Surface 1: Proactive Default Provider Alert Banner */}
+              {isMissingActiveKey && (
+                <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 p-3.5 text-xs text-amber-200 flex items-start gap-3">
+                  <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="font-semibold text-amber-100">
+                      Missing API Key for Default Provider ({matchingOption?.label || activeDefaultProv})
+                    </div>
+                    <p className="text-[11.5px] text-amber-300/90 leading-relaxed">
+                      No API key was detected in Workspace Settings or <code className="bg-amber-950/80 px-1 py-0.5 rounded text-amber-200">backend/.env</code>.
+                      Chat inference will fail until a valid key is provided and verified below.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {isInvalidActiveKey && (
+                <div className="rounded-xl border border-rose-500/40 bg-rose-950/30 p-3.5 text-xs text-rose-200 flex items-start gap-3">
+                  <AlertCircle className="h-5 w-5 shrink-0 text-rose-400 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="font-semibold text-rose-100">
+                      Invalid API Key for Default Provider ({matchingOption?.label || activeDefaultProv})
+                    </div>
+                    <p className="text-[11.5px] text-rose-300/90 leading-relaxed">
+                      {matchingOption?.validation_error ||
+                        "Upstream rejected the configured key. Please check your credentials or enter a replacement key below."}
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <form onSubmit={handleSaveSettings} className="space-y-4 text-xs">
                 {/* Default Upload Engine */}
                 <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 space-y-2">
@@ -1408,6 +1598,230 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-slate-200"
                       />
                     </div>
+                  </div>
+                </div>
+
+                {/* API Keys & Live Verification */}
+                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold text-white flex items-center gap-1.5">
+                      <Key className="h-3.5 w-3.5 text-indigo-400" />
+                      <span>API Keys & Provider Live Verification</span>
+                    </label>
+                    <p className="text-[11.5px] text-slate-400 mt-0.5">
+                      Configure and live-test credentials for each model provider. Keys saved here override <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-300">backend/.env</code>.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 pt-1">
+                    {[
+                      { id: "openai", label: "OpenAI" },
+                      { id: "anthropic", label: "Anthropic" },
+                      { id: "deepseek", label: "DeepSeek" },
+                      {
+                        id: "openai_compatible",
+                        label: "OpenAI-Compatible (Local / vLLM)",
+                      },
+                    ].map((item) => {
+                      const opt = (wsSettings?.available_providers ?? []).find(
+                        (p) => p.provider === item.id
+                      );
+                      const keySource = opt?.key_source || "none";
+                      const maskedKey = opt?.masked_key;
+                      const valStatus = opt?.validation_status || "untested";
+                      const valError = opt?.validation_error;
+                      const isVerifying = verifyingProvider === item.id;
+                      const feedback = verifyFeedback[item.id];
+                      const isRevealed = Boolean(revealedKeys[item.id]);
+
+                      return (
+                        <div
+                          key={item.id}
+                          className="rounded-lg border border-slate-800/80 bg-slate-950/70 p-3.5 space-y-2.5"
+                        >
+                          {/* Card Header: Title + Badges */}
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-xs text-white">
+                                {opt?.label || item.label}
+                              </span>
+                              {item.id ===
+                                (llmProvider ||
+                                  wsSettings?.default_llm_provider ||
+                                  "openai") && (
+                                <span className="rounded-full bg-indigo-950 border border-indigo-500/30 px-2 py-0.5 text-[10px] font-medium text-indigo-300">
+                                  Default
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              {/* Source Badge */}
+                              {keySource === "ui" ? (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-950/80 border border-emerald-500/40 px-2 py-0.5 text-[10px] font-mono text-emerald-300">
+                                  UI Key ({maskedKey || "saved"})
+                                </span>
+                              ) : keySource === "env" ? (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-sky-950/80 border border-sky-500/40 px-2 py-0.5 text-[10px] font-mono text-sky-300">
+                                  .env ({maskedKey || "configured"})
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-amber-950/80 border border-amber-500/40 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                                  Missing Key
+                                </span>
+                              )}
+
+                              {/* Validation Status Pill */}
+                              {valStatus === "valid" ? (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-900/40 border border-emerald-600/40 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
+                                  ✓ Verified
+                                </span>
+                              ) : valStatus === "invalid" ? (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-rose-900/40 border border-rose-600/40 px-2 py-0.5 text-[10px] font-medium text-rose-300">
+                                  ✗ Invalid Key
+                                </span>
+                              ) : valStatus === "missing" ? (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-amber-900/40 border border-amber-600/40 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+                                  Missing
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-slate-800 border border-slate-700 px-2 py-0.5 text-[10px] font-medium text-slate-400">
+                                  Untested
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Inputs: Key and Base URL */}
+                          <div className="space-y-2">
+                            <div className="relative flex items-center">
+                              <input
+                                type={isRevealed ? "text" : "password"}
+                                autoComplete="off"
+                                spellCheck={false}
+                                value={apiKeyDrafts[item.id] ?? ""}
+                                onChange={(e) =>
+                                  setApiKeyDrafts((prev) => ({
+                                    ...prev,
+                                    [item.id]: e.target.value,
+                                  }))
+                                }
+                                placeholder={
+                                  maskedKey
+                                    ? `Leave blank to keep ${maskedKey}`
+                                    : `Enter ${item.label} API key...`
+                                }
+                                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 pr-9 font-mono text-xs text-slate-200 placeholder:text-slate-500 placeholder:font-sans focus:border-indigo-500 focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setRevealedKeys((prev) => ({
+                                    ...prev,
+                                    [item.id]: !prev[item.id],
+                                  }))
+                                }
+                                title={
+                                  isRevealed
+                                    ? "Hide API key"
+                                    : "Show API key"
+                                }
+                                className="absolute right-2 text-slate-400 hover:text-slate-200"
+                              >
+                                {isRevealed ? (
+                                  <EyeOff className="h-4 w-4" />
+                                ) : (
+                                  <Eye className="h-4 w-4" />
+                                )}
+                              </button>
+                            </div>
+
+                            {item.id === "openai_compatible" && (
+                              <div>
+                                <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                                  Base URL (vLLM / Ollama / Local / Custom)
+                                </label>
+                                <input
+                                  type="text"
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  value={compatBaseUrl}
+                                  onChange={(e) =>
+                                    setCompatBaseUrl(e.target.value)
+                                  }
+                                  placeholder="http://localhost:11434/v1"
+                                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 font-mono text-xs text-slate-200 placeholder:text-slate-500 placeholder:font-sans focus:border-indigo-500 focus:outline-none"
+                                />
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Action Buttons & Feedback */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleVerifyKey(item.id)}
+                                disabled={
+                                  isVerifying || verifyKeyMutation.isPending
+                                }
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-500/50 bg-indigo-600/20 px-3 py-1 text-xs font-semibold text-indigo-300 hover:bg-indigo-600/30 disabled:opacity-50 transition"
+                              >
+                                {isVerifying ? (
+                                  <>
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    <span>Verifying...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ShieldCheck className="h-3.5 w-3.5 text-indigo-400" />
+                                    <span>Verify & Save</span>
+                                  </>
+                                )}
+                              </button>
+
+                              {keySource === "ui" && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleClearUiKey(item.id)}
+                                  disabled={updateSettingsMutation.isPending}
+                                  title="Remove UI override and revert to backend/.env"
+                                  className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs text-slate-400 hover:border-rose-500/50 hover:text-rose-300 transition"
+                                >
+                                  <span>Clear UI Key</span>
+                                </button>
+                              )}
+                            </div>
+
+                            {feedback && (
+                              <div
+                                className={`rounded-md px-2.5 py-1 text-[11px] flex items-center gap-1.5 ${
+                                  feedback.valid
+                                    ? "bg-emerald-950/60 text-emerald-300 border border-emerald-500/40"
+                                    : "bg-rose-950/60 text-rose-300 border border-rose-500/40"
+                                }`}
+                              >
+                                {feedback.valid ? (
+                                  <Check className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                                ) : (
+                                  <AlertCircle className="h-3.5 w-3.5 shrink-0 text-rose-400" />
+                                )}
+                                <span>{feedback.message}</span>
+                              </div>
+                            )}
+
+                            {!feedback &&
+                              valStatus === "invalid" &&
+                              valError && (
+                                <div className="rounded-md px-2.5 py-1 text-[11px] bg-rose-950/60 text-rose-300 border border-rose-500/40 flex items-center gap-1.5">
+                                  <AlertCircle className="h-3.5 w-3.5 shrink-0 text-rose-400" />
+                                  <span>{valError}</span>
+                                </div>
+                              )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 

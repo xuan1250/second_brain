@@ -41,6 +41,7 @@ from src.config import Settings
 from src.db.models import ChatThread
 from src.ingestion.indexer import BaseEmbedder, SparseEncoder
 from src.rag.graph import delete_thread_state, get_thread_state, stream_chat_response
+from src.rag.llm import record_key_validation, sanitize_llm_error
 from src.rag.reranker import FlashRankReranker
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -156,13 +157,18 @@ async def chat_completions(
                 data_obj = item.get("data") if isinstance(item.get("data"), dict) else {"value": item.get("data")}
                 yield format_sse_frame(event_type, data_obj)
         except Exception as exc:
-            err_msg = str(exc)
+            clean_err, is_auth = sanitize_llm_error(exc, provider=payload.provider)
+            if is_auth and payload.provider:
+                try:
+                    record_key_validation(payload.provider, status="invalid", error=clean_err, settings=settings)
+                except Exception:
+                    pass
             yield format_sse_frame(
                 "error",
                 {
                     "thread_id": active_thread_id,
-                    "message": err_msg,
-                    "error": err_msg,
+                    "message": clean_err,
+                    "error": clean_err,
                 },
             )
 

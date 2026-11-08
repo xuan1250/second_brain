@@ -897,3 +897,187 @@ async def test_sync_document_metadata_across_stores_hybrid(in_memory_engine):
         assert pt_map[pt2]["epistemic_type"] == "evaluative"
 
 
+def test_api_key_normalization_validation_and_masking():
+    """Verify normalize_api_key, is_valid_api_key (rejections), and mask_api_key (<16 vs >=16)."""
+    from src.rag.llm import is_valid_api_key, mask_api_key, normalize_api_key
+
+    # Normalization
+    assert normalize_api_key("  'sk-12345678'  ") == "sk-12345678"
+    assert normalize_api_key(' "sk-87654321" ') == "sk-87654321"
+    assert normalize_api_key("") == ""
+    assert normalize_api_key(None) == ""
+
+    # Validation: rejection of empty, short, control chars, whitespace, placeholders
+    assert is_valid_api_key(None) is False
+    assert is_valid_api_key("") is False
+    assert is_valid_api_key("short") is False  # < 8 chars
+    assert is_valid_api_key("sk-12345678\x00") is False  # ASCII control char
+    assert is_valid_api_key("sk-1234\t5678") is False  # tab
+    assert is_valid_api_key("sk-1234 5678") is False  # space
+    assert is_valid_api_key("your-api-key-here") is False  # placeholder prefix
+    assert is_valid_api_key("replace-me") is False  # placeholder prefix
+    assert is_valid_api_key("none") is False
+    assert is_valid_api_key("null") is False
+    assert is_valid_api_key("todo") is False
+    assert is_valid_api_key("sk-valid-key-12345678") is True
+
+    # Masking: None for invalid, ••••+suffix for <16 chars, prefix+••••+suffix for >=16 chars
+    assert mask_api_key("invalid") is None
+    assert mask_api_key("mysecret01") == "••••01"  # len=10 (< 16)
+    assert mask_api_key("sk-proj-1234567890abcdef") == "sk-p••••cdef"  # len=24 (>= 16)
+
+
+def test_compute_key_hash_and_validation_state():
+    """Verify compute_key_hash binding to key+url, and get_provider_validation_state."""
+    from src.rag.llm import (
+        clear_ui_credentials,
+        compute_key_hash,
+        get_provider_validation_state,
+        record_key_validation,
+        sync_runtime_credentials,
+    )
+
+    try:
+        clear_ui_credentials()
+
+        # Hash computation
+        h1 = compute_key_hash("sk-test-key-12345678", "https://api.openai.com/v1/")
+        h2 = compute_key_hash("sk-test-key-12345678", "https://api.openai.com/v1")  # trailing slash normalized
+        assert h1 is not None and len(h1) == 16
+        assert h1 == h2
+
+        h3 = compute_key_hash("sk-different-key-12345678", "https://api.openai.com/v1")
+        assert h3 != h1
+        assert compute_key_hash(None) is None
+        assert compute_key_hash("short") is None
+
+        # Validation recording and state lookup
+        sync_runtime_credentials({"openai": "sk-test-key-12345678"}, None, None)
+        record = record_key_validation("openai", "valid")
+        assert record["status"] == "valid"
+        assert record["key_hash"] == compute_key_hash("sk-test-key-12345678")
+
+        state, err = get_provider_validation_state("openai", "sk-test-key-12345678", is_configured=True)
+        assert state == "valid"
+        assert err is None
+
+        # If key changes, hash mismatch causes state to be "untested"
+        state_mismatch, _ = get_provider_validation_state("openai", "sk-different-key-12345678", is_configured=True)
+        assert state_mismatch == "untested"
+
+        # If not configured
+        state_missing, _ = get_provider_validation_state("anthropic", None, is_configured=False)
+        assert state_missing == "missing"
+    finally:
+        clear_ui_credentials()
+
+
+def test_sanitize_llm_error():
+    """Verify sanitize_llm_error scrubs keys, truncates, and identifies auth error markers."""
+    from src.rag.llm import clear_ui_credentials, sanitize_llm_error, sync_runtime_credentials
+
+    try:
+        clear_ui_credentials()
+        sync_runtime_credentials({"openai": "sk-secret-openai-key-12345"}, None, None)
+
+        raw_err = (
+            "Error code: 401 - {'error': {'message': 'Incorrect API key provided: sk-secret-openai-key-12345. "
+            "You can find your API key at https://platform.openai.com/account/api-keys.', 'type': 'invalid_request_error'}}"
+        )
+        clean_msg, is_auth = sanitize_llm_error(raw_err, candidate_key="sk-secret-openai-key-12345")
+        assert "sk-secret-openai-key-12345" not in clean_msg
+        assert "[REDACTED]" in clean_msg
+        assert is_auth is True
+
+        # Non-auth error
+        clean_msg2, is_auth2 = sanitize_llm_error("Connection timed out after 30000ms")
+        assert is_auth2 is False
+
+        # Truncation > 240 chars
+        long_err = "A" * 300
+        clean_long, _ = sanitize_llm_error(long_err)
+        assert len(clean_long) <= 240
+        assert clean_long.endswith("...")
+    finally:
+        clear_ui_credentials()
+
+
+@pytest.mark.asyncio
+async def test_workspace_settings_migration_and_credential_precedence(in_memory_engine, monkeypatch):
+    """Verify SQLite column migration, UI Key > .env Key precedence, and reverting to .env on clear."""
+    from src.rag.llm import clear_ui_credentials, resolve_provider_credential
+
+    try:
+        clear_ui_credentials()
+        await init_db(in_memory_engine)
+        session_factory = create_session_factory(in_memory_engine)
+
+        async with session_factory() as session:
+            # 1. Verify table columns migrated
+            cols = (await session.execute(text("PRAGMA table_info(workspace_settings)"))).fetchall()
+            col_names = {c[1] for c in cols}
+            assert "llm_api_keys" in col_names
+            assert "llm_key_validations" in col_names
+            assert "llm_compat_base_url" in col_names
+
+            # 2. When only .env key is set
+            monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai-key-12345")
+            key, source, _ = resolve_provider_credential("openai")
+            assert key == "sk-env-openai-key-12345"
+            assert source == "env"
+
+            # 3. Setting UI key in WorkspaceSettings overrides .env key
+            await update_workspace_settings(
+                session=session,
+                api_keys={"openai": "sk-ui-openai-key-99999"},
+            )
+            key, source, _ = resolve_provider_credential("openai")
+            assert key == "sk-ui-openai-key-99999"
+            assert source == "ui"
+
+            # 4. Clearing UI key with empty string "" immediately reverts to .env key
+            await update_workspace_settings(
+                session=session,
+                api_keys={"openai": ""},
+            )
+            key, source, _ = resolve_provider_credential("openai")
+            assert key == "sk-env-openai-key-12345"
+            assert source == "env"
+    finally:
+        clear_ui_credentials()
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_isolation_and_aliases(in_memory_engine):
+    """Verify llm_compat_base_url only affects _OPENAI_COMPATIBLE_PROVIDERS and does not leak."""
+    from src.rag.llm import clear_ui_credentials, resolve_provider_credential
+
+    try:
+        clear_ui_credentials()
+        await init_db(in_memory_engine)
+        session_factory = create_session_factory(in_memory_engine)
+
+        async with session_factory() as session:
+            compat_url = "https://custom-proxy.internal/v1"
+            await update_workspace_settings(
+                session=session,
+                llm_compat_base_url=compat_url,
+                api_keys={"openai_compatible": "sk-compat-token-12345"},
+            )
+
+            # Standard providers must NOT use llm_compat_base_url
+            for std_prov in ("openai", "anthropic", "deepseek"):
+                _, _, base_url = resolve_provider_credential(std_prov)
+                assert base_url != compat_url
+
+            # Compatible aliases MUST resolve compat_url and inherit openai_compatible UI key
+            for alias in ("openai_compatible", "glm", "vllm", "custom"):
+                key, source, base_url = resolve_provider_credential(alias)
+                assert base_url == compat_url
+                assert key == "sk-compat-token-12345"
+                assert source == "ui"
+    finally:
+        clear_ui_credentials()
+
+
+

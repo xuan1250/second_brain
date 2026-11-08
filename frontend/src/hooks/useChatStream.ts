@@ -428,6 +428,7 @@ export function useChatStream(
         );
         void queryClient.invalidateQueries({ queryKey: ["chat-threads"] });
         void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
+        void queryClient.invalidateQueries({ queryKey: ["workspaceSettings"] });
       }
     },
     [activeThreadId, isStreaming, onThreadIdResolved, queryClient, stopStreaming]

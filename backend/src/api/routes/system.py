@@ -23,7 +23,13 @@ from src.db.models import ChatThread, Document, DocumentChunk
 from src.ingestion.indexer import release_cuda_cache, resolve_compute_device, resolve_sparse_mode
 from src.ingestion.classifier import is_classifier_resident, get_classifier_model_name
 from src.ingestion.worker import IngestionOrchestrator
-from src.rag.llm import _load_dotenv_if_present, is_valid_api_key
+from src.rag.llm import (
+    _load_dotenv_if_present,
+    get_provider_validation_state,
+    is_valid_api_key,
+    mask_api_key,
+    resolve_provider_credential,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,42 +149,27 @@ def _build_provider_options(settings: Settings) -> tuple[list[ProviderOption], l
     _load_dotenv_if_present()
     active_provider = (os.environ.get("LLM_PROVIDER") or settings.llm.provider or "openai").strip().lower()
     active_model = (os.environ.get("LLM_MODEL_NAME") or settings.llm.model_name or "").strip()
-    prov_compat = settings.llm.providers.get("openai_compatible")
-    has_base_url = bool(
-        os.environ.get("LLM_BASE_URL")
-        or settings.llm.base_url
-        or (prov_compat and prov_compat.base_url)
-    )
-    has_compat_key = any(
-        is_valid_api_key(os.environ.get(k))
-        for k in ("LLM_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY")
-    )
 
     definitions = [
-        (
-            "openai",
-            "OpenAI",
-            is_valid_api_key(os.environ.get("OPENAI_API_KEY")),
-        ),
-        (
-            "anthropic",
-            "Anthropic",
-            is_valid_api_key(os.environ.get("ANTHROPIC_API_KEY")),
-        ),
-        (
-            "deepseek",
-            "DeepSeek",
-            is_valid_api_key(os.environ.get("DEEPSEEK_API_KEY")),
-        ),
-        (
-            "openai_compatible",
-            "OpenAI-Compatible (Custom / GLM / vLLM)",
-            bool(has_base_url and has_compat_key),
-        ),
+        ("openai", "OpenAI"),
+        ("anthropic", "Anthropic"),
+        ("deepseek", "DeepSeek"),
+        ("openai_compatible", "OpenAI-Compatible (Custom / GLM / vLLM)"),
     ]
 
     all_options: list[ProviderOption] = []
-    for prov_id, label, is_configured in definitions:
+    for prov_id, label in definitions:
+        resolved_key, key_source, resolved_base_url = resolve_provider_credential(prov_id, settings)
+        if prov_id == "openai_compatible":
+            is_configured = bool(resolved_key and resolved_base_url)
+        else:
+            is_configured = bool(resolved_key)
+
+        masked = mask_api_key(resolved_key)
+        val_status, val_err = get_provider_validation_state(
+            prov_id, resolved_key, is_configured, resolved_base_url
+        )
+
         prov_entry = settings.llm.providers.get(prov_id)
         entry_model = (prov_entry.model_name if prov_entry else "").strip()
         default_model = entry_model or (active_model if active_provider == prov_id else "")
@@ -188,6 +179,11 @@ def _build_provider_options(settings: Settings) -> tuple[list[ProviderOption], l
                 label=label,
                 configured=is_configured,
                 default_model=default_model,
+                key_source=key_source,
+                masked_key=masked,
+                validation_status=val_status,
+                validation_error=val_err,
+                base_url=resolved_base_url if prov_id == "openai_compatible" else resolved_base_url,
             )
         )
 
@@ -332,7 +328,7 @@ async def system_stats(
             "provider": active_provider,
             "model_name": active_model,
             "temperature": settings.llm.temperature,
-            "base_url": os.environ.get("LLM_BASE_URL") or settings.llm.base_url,
+            "base_url": resolve_provider_credential(active_provider, settings)[2],
         },
         embedding={
             "provider": settings.embedding.provider,

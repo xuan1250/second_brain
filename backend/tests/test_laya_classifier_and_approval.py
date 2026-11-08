@@ -955,14 +955,16 @@ async def test_epistemic_partitioned_prompt_and_xml_context():
 
     classifier = LayaDomainClassifier()
 
-    with patch("src.ingestion.classifier.get_settings") as mock_settings, patch("src.config.get_settings", mock_settings):
-        mock_settings.return_value.llm.provider = "openai"
-        mock_settings.return_value.llm.model_name = "mock-gpt-4o"
-        with patch("langchain_openai.ChatOpenAI", return_value=MockChatModel()):
-            profile = await classifier._classify_with_llm(
-                "Software architecture and distributed database replication.",
-                filename="architecture.pdf",
-            )
+    from src.rag.llm import set_chat_model
+
+    set_chat_model(MockChatModel())
+    try:
+        profile = await classifier._classify_with_llm(
+            "Software architecture and distributed database replication.",
+            filename="architecture.pdf",
+        )
+    finally:
+        set_chat_model(None)
 
     assert profile is not None
     assert profile.primary_domain == "engineering"

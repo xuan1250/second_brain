@@ -57,7 +57,7 @@ def mount_frontend_if_present(app: FastAPI, dist_dir: Path) -> bool:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Coordinate startup and shutdown of SQLite, Qdrant, ProcessPoolExecutor, and LangGraph checkpointer."""
     get_settings.cache_clear()
-    settings = load_settings()
+    settings = get_settings()
 
     # 1. Ensure storage and database directories exist
     for sub in ("raw", "parsed", "markdown", "models"):

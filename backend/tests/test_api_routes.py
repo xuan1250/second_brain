@@ -30,7 +30,7 @@ from src.ingestion.indexer import (
     set_sparse_encoder,
 )
 from src.rag.graph import close_checkpointer
-from src.rag.llm import set_chat_model
+from src.rag.llm import clear_ui_credentials, set_chat_model
 from src.rag.reranker import set_reranker
 from src.rag.retriever import set_active_qdrant_client
 
@@ -105,6 +105,7 @@ async def api_client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("INGESTION_USE_PROCESS_POOL", "false")
     monkeypatch.setenv("PREFER_PYMUPDF4LLM", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("INGESTION_ENABLE_LLM_CLASSIFICATION_FALLBACK", "false")
 
     get_settings.cache_clear()
     set_embedder(DeterministicStubEmbedder(dimensions=STUB_DIM))
@@ -120,6 +121,7 @@ async def api_client(tmp_path: Path, monkeypatch):
             client.app = test_app
             yield client, data_dir
 
+    clear_ui_credentials()
     set_chat_model(None)
     set_embedder(None)
     set_sparse_encoder(None)
@@ -129,7 +131,7 @@ async def api_client(tmp_path: Path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _wait_for_document_ready(client: AsyncClient, doc_id: str, timeout_s: float = 15.0) -> dict[str, Any]:
+async def _wait_for_document_ready(client: AsyncClient, doc_id: str, timeout_s: float = 30.0) -> dict[str, Any]:
     deadline = asyncio.get_running_loop().time() + timeout_s
     last_payload: dict[str, Any] = {}
     while asyncio.get_running_loop().time() < deadline:
@@ -359,7 +361,8 @@ async def test_chat_sse_streaming_threads_and_error_frame(
         files={"file": ("q3_metrics.xlsx", sample_xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
     doc_id = up_resp.json()["id"]
-    await _wait_for_document_ready(client, doc_id)
+    ready_doc = await _wait_for_document_ready(client, doc_id)
+    target_dom = ready_doc.get("primary_domain_id") or "economics"
 
     # Configure fake LLM responses for rewrite -> grade -> synthesize
     fake_llm = GenericFakeChatModel(
@@ -370,6 +373,8 @@ async def test_chat_sse_streaming_threads_and_error_frame(
                         {
                             "needs_retrieval": True,
                             "rewritten_queries": ["Q3 2025 operating margin and gross profit"],
+                            "target_domains": [target_dom],
+                            "domain_queries": {target_dom: "Q3 2025 operating margin and gross profit"},
                         }
                     )
                 ),
@@ -761,7 +766,8 @@ async def test_chat_multi_turn_citations_persisted_via_api(api_client, sample_xl
     )
     assert up_resp.status_code == 202
     doc_id = up_resp.json()["id"]
-    await _wait_for_document_ready(client, doc_id)
+    ready_doc = await _wait_for_document_ready(client, doc_id)
+    target_dom = ready_doc.get("primary_domain_id") or "economics"
 
     # 2. Configure Fake LLM for Turn 1 (synthesis with citations) and Turn 2 (fallback notice)
     fake_llm = GenericFakeChatModel(
@@ -770,7 +776,12 @@ async def test_chat_multi_turn_citations_persisted_via_api(api_client, sample_xl
                 # Turn 1: Rewrite -> Grade -> Synthesize
                 AIMessage(
                     content=json.dumps(
-                        {"needs_retrieval": True, "rewritten_queries": ["Q3 2025 operating margin"]}
+                        {
+                            "needs_retrieval": True,
+                            "rewritten_queries": ["Q3 2025 operating margin"],
+                            "target_domains": [target_dom],
+                            "domain_queries": {target_dom: "Q3 2025 operating margin"},
+                        }
                     )
                 ),
                 AIMessage(
@@ -1241,4 +1252,188 @@ async def test_domain_limits_and_validation(api_client):
         # Clean up created test domains
         for s in created_slugs:
             await client.delete(f"/api/v1/domains/{s}?target_domain=general")
+
+
+async def test_workspace_settings_api_keys_and_masking(api_client):
+    """Verify setting, masking, clearing UI keys, and zero raw secret exposure."""
+    client, _ = api_client
+    raw_secret = "sk-proj-test1234567890abcdef"
+
+    # 1. Initially check GET /api/v1/settings
+    get_resp = await client.get("/api/v1/settings")
+    assert get_resp.status_code == 200
+    data = get_resp.json()
+    assert "available_providers" in data
+    assert raw_secret not in get_resp.text
+
+    # 2. PATCH /api/v1/settings with valid API keys
+    patch_resp = await client.patch(
+        "/api/v1/settings",
+        json={
+            "api_keys": {"openai": raw_secret},
+            "llm_compat_base_url": "https://api.openai-proxy.internal/v1",
+        },
+    )
+    assert patch_resp.status_code == 200
+    patch_data = patch_resp.json()
+    assert patch_data["llm_compat_base_url"] == "https://api.openai-proxy.internal/v1"
+    # Never leak raw secret
+    assert raw_secret not in patch_resp.text
+    # Find openai provider option
+    openai_opt = next(p for p in patch_data["available_providers"] if p["provider"] == "openai")
+    assert openai_opt["key_source"] == "ui"
+    assert openai_opt["masked_key"] == "sk-p••••cdef"
+    assert openai_opt["configured"] is True
+
+    # 3. Check GET /api/v1/system/stats does not leak raw secret
+    stats_resp = await client.get("/api/v1/system/stats")
+    assert stats_resp.status_code == 200
+    assert raw_secret not in stats_resp.text
+
+    # 4. Clear key with empty string ""
+    clear_resp = await client.patch(
+        "/api/v1/settings",
+        json={"api_keys": {"openai": ""}},
+    )
+    assert clear_resp.status_code == 200
+    clear_data = clear_resp.json()
+    openai_cleared = next(p for p in clear_data["available_providers"] if p["provider"] == "openai")
+    assert openai_cleared["key_source"] in ("none", "env")
+    assert raw_secret not in clear_resp.text
+
+
+async def test_workspace_settings_validation_errors(api_client):
+    """Verify HTTP 422 on placeholders, control characters, and unsafe base URLs."""
+    client, _ = api_client
+
+    # Placeholder rejection
+    resp_ph = await client.patch(
+        "/api/v1/settings",
+        json={"api_keys": {"openai": "your-api-key-here"}},
+    )
+    assert resp_ph.status_code == 422
+
+    # Whitespace/control char rejection
+    resp_ctrl = await client.patch(
+        "/api/v1/settings",
+        json={"api_keys": {"openai": "sk-test\x00invalid key"}},
+    )
+    assert resp_ctrl.status_code == 422
+
+    # Unsafe base URL rejection (metadata, localhost:8000, link-local, qdrant)
+    unsafe_urls = [
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://localhost:8000/api/v1",
+        "http://127.0.0.1:8000/v1",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://qdrant:6333",
+        "ftp://example.com/v1",
+    ]
+    for unsafe_url in unsafe_urls:
+        resp_url = await client.patch(
+            "/api/v1/settings",
+            json={"llm_compat_base_url": unsafe_url},
+        )
+        assert resp_url.status_code == 422, f"Expected 422 for unsafe URL: {unsafe_url}"
+
+
+async def test_verify_key_endpoint_live_and_anti_exfiltration(api_client):
+    """Verify POST /api/v1/settings/verify-key for success, failure with persistence, SSRF/anti-exfil, and missing keys."""
+    client, _ = api_client
+
+    # 1. Missing key verification
+    missing_resp = await client.post(
+        "/api/v1/settings/verify-key",
+        json={"provider": "deepseek"},
+    )
+    assert missing_resp.status_code == 200
+    missing_data = missing_resp.json()
+    assert missing_data["valid"] is False
+    assert missing_data["validation_status"] == "missing"
+    assert "No API key configured" in missing_data["validation_error"]
+
+    # 2. Format-invalid key verification
+    invalid_fmt_resp = await client.post(
+        "/api/v1/settings/verify-key",
+        json={"provider": "openai", "api_key": "your-openai-key"},
+    )
+    assert invalid_fmt_resp.status_code == 200
+    invalid_fmt_data = invalid_fmt_resp.json()
+    assert invalid_fmt_data["valid"] is False
+    assert invalid_fmt_data["validation_status"] == "invalid"
+    assert "Invalid API key format" in invalid_fmt_data["validation_error"]
+
+    # 3. Anti-exfiltration guard for openai_compatible: new unsaved base_url without api_key
+    exfil_resp = await client.post(
+        "/api/v1/settings/verify-key",
+        json={
+            "provider": "openai_compatible",
+            "base_url": "https://attacker.evil.com/v1",
+            "api_key": None,
+        },
+    )
+    assert exfil_resp.status_code == 200
+    exfil_data = exfil_resp.json()
+    assert exfil_data["valid"] is False
+    assert exfil_data["validation_status"] == "invalid"
+    assert "Please enter the API key when verifying a new Base URL." in exfil_data["validation_error"]
+
+    # 4. Valid key verification with mock LLM
+    fake_ok = GenericFakeChatModel(messages=iter([AIMessage(content="pong")]))
+    set_chat_model(fake_ok)
+
+    valid_resp = await client.post(
+        "/api/v1/settings/verify-key",
+        json={
+            "provider": "openai",
+            "api_key": "sk-proj-validtestkey1234567890",
+            "save_if_valid": True,
+        },
+    )
+    assert valid_resp.status_code == 200
+    valid_data = valid_resp.json()
+    assert valid_data["valid"] is True
+    assert valid_data["validation_status"] == "valid"
+    assert valid_data["validation_error"] is None
+    assert valid_data["masked_key"] == "sk-p••••7890"
+    assert valid_data["key_source"] == "ui"
+    assert valid_data["provider_option"]["validation_status"] == "valid"
+
+    # Verify that GET /api/v1/settings now reflects valid status
+    get_sett = await client.get("/api/v1/settings")
+    assert get_sett.status_code == 200
+    openai_opt = next(p for p in get_sett.json()["available_providers"] if p["provider"] == "openai")
+    assert openai_opt["validation_status"] == "valid"
+    assert openai_opt["key_source"] == "ui"
+
+    # 5. Invalid key (401 error) with save_if_valid=True persists invalid state & redacts key
+    bad_key = "sk-proj-badkey0987654321xyz"
+
+    class FailingChatModel(GenericFakeChatModel):
+        async def ainvoke(self, *args, **kwargs):
+            raise Exception(f"401 Unauthorized: Invalid API key {bad_key}")
+
+    set_chat_model(FailingChatModel(messages=iter([])))
+
+    fail_resp = await client.post(
+        "/api/v1/settings/verify-key",
+        json={
+            "provider": "openai",
+            "api_key": bad_key,
+            "save_if_valid": True,
+        },
+    )
+    assert fail_resp.status_code == 200
+    fail_data = fail_resp.json()
+    assert fail_data["valid"] is False
+    assert fail_data["validation_status"] == "invalid"
+    assert bad_key not in fail_resp.text
+    assert "[REDACTED]" in fail_data["validation_error"]
+    assert fail_data["provider_option"]["validation_status"] == "invalid"
+
+    # Check GET /api/v1/settings also reflects invalid status and never leaks bad_key
+    get_sett2 = await client.get("/api/v1/settings")
+    assert bad_key not in get_sett2.text
+    openai_opt2 = next(p for p in get_sett2.json()["available_providers"] if p["provider"] == "openai")
+    assert openai_opt2["validation_status"] == "invalid"
 

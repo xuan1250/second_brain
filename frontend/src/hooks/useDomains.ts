@@ -12,6 +12,7 @@ import {
   updateSubdomain,
   updateWorkspaceSettings,
   upsertLexiconTerm,
+  verifyLlmKey,
 } from "../lib/api";
 import { STARTER_DOMAINS_FALLBACK } from "../lib/domainTheme";
 import type {
@@ -22,6 +23,8 @@ import type {
   LexiconCreatePayload,
   SubdomainCreatePayload,
   SubdomainUpdatePayload,
+  VerifyKeyPayload,
+  VerifyKeyResponse,
   WorkspaceSettings,
   WorkspaceSettingsUpdatePayload,
 } from "../lib/types";
@@ -181,6 +184,21 @@ export function useUpdateWorkspaceSettingsMutation() {
       updateWorkspaceSettings(payload),
     onSuccess: (updatedSettings) => {
       queryClient.setQueryData(["workspaceSettings"], updatedSettings);
+      void queryClient.invalidateQueries({ queryKey: ["workspaceSettings"] });
+      void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
+    },
+  });
+}
+
+export function useVerifyLlmKeyMutation() {
+  const queryClient = useQueryClient();
+  return useMutation<VerifyKeyResponse, Error, VerifyKeyPayload>({
+    mutationFn: (payload: VerifyKeyPayload) => verifyLlmKey(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspaceSettings"] });
+      void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["workspaceSettings"] });
       void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
     },

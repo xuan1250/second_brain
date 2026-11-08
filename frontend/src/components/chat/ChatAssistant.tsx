@@ -755,6 +755,7 @@ export const ChatAssistant: React.FC = () => {
     setSelectedModel,
     currentDomainFilter,
     migrateDraftDomainFilter,
+    openSettingsModal,
   } = useWorkspace();
 
   const [inputValue, setInputValue] = useState("");
@@ -781,10 +782,23 @@ export const ChatAssistant: React.FC = () => {
   });
 
   const threads = threadsData?.threads ?? threadsData?.items ?? [];
-  const providers =
-    stats?.available_providers?.length
-      ? stats.available_providers
-      : stats?.configured_providers ?? [];
+  const providers = wsSettings?.available_providers?.length
+    ? wsSettings.available_providers
+    : (stats?.available_providers ?? stats?.configured_providers ?? []);
+
+  const activeProv =
+    selectedProvider ||
+    wsSettings?.default_llm_provider ||
+    stats?.llm?.provider ||
+    "openai";
+  const activeProviderOption = providers.find((p) => p.provider === activeProv);
+  const isMissingKey = Boolean(
+    activeProviderOption && !activeProviderOption.configured
+  );
+  const isInvalidKey = Boolean(
+    activeProviderOption && activeProviderOption.validation_status === "invalid"
+  );
+  const hasKeyIssue = isMissingKey || isInvalidKey;
 
   const hasInitializedModelRef = useRef(false);
 
@@ -819,7 +833,6 @@ export const ChatAssistant: React.FC = () => {
   }, [
     wsSettings?.default_llm_provider,
     wsSettings?.default_llm_model,
-    wsSettings?.updated_at,
     stats?.llm?.provider,
     stats?.llm?.model_name,
     setSelectedProvider,
@@ -869,18 +882,35 @@ export const ChatAssistant: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowModelConfig((v) => !v)}
-              title="Configure LLM Provider & Model"
+              title={
+                hasKeyIssue
+                  ? isInvalidKey
+                    ? `Invalid API key for ${activeProviderOption?.label || activeProv}. Click to reconfigure.`
+                    : `Missing API key for ${activeProviderOption?.label || activeProv}. Click to configure.`
+                  : "Configure LLM Provider & Model"
+              }
               className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition ${
                 showModelConfig
                   ? "border-indigo-500 bg-indigo-500/20 text-indigo-200"
+                  : hasKeyIssue
+                  ? isInvalidKey
+                    ? "border-rose-500/60 bg-rose-950/30 text-rose-300 hover:border-rose-400"
+                    : "border-amber-500/60 bg-amber-950/30 text-amber-300 hover:border-amber-400"
                   : "border-slate-800 bg-slate-900 text-slate-300 hover:text-white"
               }`}
             >
               <Cpu className="h-3.5 w-3.5 text-indigo-400" />
-              <span className="text-slate-400">{selectedProvider || stats?.llm?.provider || "openai"}:</span>
+              <span className="text-slate-400">{activeProv}:</span>
               <span className="text-indigo-300 font-mono font-medium max-w-[120px] truncate">
                 {selectedModel || stats?.llm?.model_name || "gpt-4o"}
               </span>
+              {hasKeyIssue && (
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    isInvalidKey ? "bg-rose-500 animate-pulse" : "bg-amber-400"
+                  }`}
+                />
+              )}
             </button>
 
             <button
@@ -1163,6 +1193,50 @@ export const ChatAssistant: React.FC = () => {
               <strong>{selectedFilterDocIds.length}</strong> selected document
               {selectedFilterDocIds.length > 1 ? "s" : ""}
             </span>
+          </div>
+        )}
+
+        {/* Surface 2: Proactive Chat Composer Alert Banner */}
+        {hasKeyIssue && (
+          <div
+            className={`flex items-center justify-between gap-2.5 rounded-xl border p-2.5 text-xs ${
+              isInvalidKey
+                ? "border-rose-500/40 bg-rose-950/40 text-rose-200"
+                : "border-amber-500/40 bg-amber-950/40 text-amber-200"
+            }`}
+          >
+            <div className="flex items-start gap-2 min-w-0">
+              <AlertTriangle
+                className={`h-4 w-4 shrink-0 mt-0.5 ${
+                  isInvalidKey ? "text-rose-400" : "text-amber-400"
+                }`}
+              />
+              <div className="space-y-0.5 min-w-0">
+                <p className="font-semibold text-[11.5px] leading-tight truncate">
+                  {isInvalidKey
+                    ? activeProviderOption?.validation_error ||
+                      `API key verification failed for ${activeProviderOption?.label || activeProv}.`
+                    : `No API key configured for ${activeProviderOption?.label || activeProv}.`}
+                </p>
+                <p className="text-[10.5px] opacity-80 leading-tight">
+                  {isInvalidKey
+                    ? "Upstream rejected this key. Update it in Workspace Settings."
+                    : "No valid key found in Workspace Settings or backend/.env."}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => openSettingsModal("ingestion")}
+              className={`shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer shadow-xs ${
+                isInvalidKey
+                  ? "bg-rose-600 text-white hover:bg-rose-500"
+                  : "bg-amber-600 text-white hover:bg-amber-500"
+              }`}
+            >
+              <span>Configure API Key</span>
+              <span>&rarr;</span>
+            </button>
           </div>
         )}
 

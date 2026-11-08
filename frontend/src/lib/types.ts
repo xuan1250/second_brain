@@ -262,6 +262,11 @@ export interface ProviderOption {
   label: string;
   configured: boolean;
   default_model: string;
+  key_source?: "ui" | "env" | "none";
+  masked_key?: string | null;
+  validation_status?: "valid" | "invalid" | "untested" | "missing";
+  validation_error?: string | null;
+  base_url?: string | null;
 }
 
 export interface SystemHealth {
@@ -510,6 +515,7 @@ export interface WorkspaceSettings {
   default_llm_provider: string | null;
   default_llm_model: string | null;
   available_providers: ProviderOption[];
+  llm_compat_base_url?: string | null;
   updated_at?: string | null;
 }
 
@@ -524,4 +530,25 @@ export interface WorkspaceSettingsUpdatePayload {
   high_confidence_threshold?: number;
   default_llm_provider?: string | null;
   default_llm_model?: string | null;
+  api_keys?: Record<string, string | null>;
+  llm_compat_base_url?: string | null;
+}
+
+export interface VerifyKeyPayload {
+  provider: "openai" | "anthropic" | "deepseek" | "openai_compatible" | string;
+  api_key?: string | null;
+  model?: string | null;
+  base_url?: string | null;
+  save_if_valid?: boolean;
+}
+
+export interface VerifyKeyResponse {
+  provider: string;
+  valid: boolean;
+  validation_status: "valid" | "invalid" | "untested" | "missing";
+  validation_error?: string | null;
+  key_source: "ui" | "env" | "none";
+  masked_key?: string | null;
+  tested_model: string;
+  provider_option: ProviderOption;
 }

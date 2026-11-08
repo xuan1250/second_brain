@@ -716,8 +716,13 @@ async def update_workspace_settings(
     high_confidence_threshold: float | None = None,
     default_llm_provider: str | None = None,
     default_llm_model: str | None = None,
+    api_keys: dict[str, str | None] | None = None,
+    key_validations: dict[str, dict[str, Any] | None] | None = None,
+    llm_compat_base_url: str | None = None,
 ) -> WorkspaceSettings:
     """Update WorkspaceSettings in SQLite and sync runtime configuration."""
+    from src.rag.llm import normalize_api_key, sync_runtime_credentials
+
     ws = await get_workspace_settings(session)
     if default_upload_mode is not None:
         ws.default_upload_mode = default_upload_mode
@@ -726,21 +731,73 @@ async def update_workspace_settings(
     if high_confidence_threshold is not None:
         ws.high_confidence_threshold = high_confidence_threshold
     if default_llm_provider is not None:
-        ws.default_llm_provider = default_llm_provider
+        ws.default_llm_provider = default_llm_provider.strip() or None
     if default_llm_model is not None:
-        ws.default_llm_model = default_llm_model
+        ws.default_llm_model = default_llm_model.strip() or None
+    if llm_compat_base_url is not None:
+        ws.llm_compat_base_url = llm_compat_base_url.strip() or None
+
+    stored_keys: dict[str, str] = {}
+    if ws.llm_api_keys:
+        try:
+            parsed = json.loads(ws.llm_api_keys)
+            if isinstance(parsed, dict):
+                stored_keys = {str(k): str(v) for k, v in parsed.items() if v is not None}
+        except Exception:
+            stored_keys = {}
+
+    stored_validations: dict[str, dict[str, Any]] = {}
+    if ws.llm_key_validations:
+        try:
+            parsed = json.loads(ws.llm_key_validations)
+            if isinstance(parsed, dict):
+                stored_validations = {str(k): v for k, v in parsed.items() if isinstance(v, dict)}
+        except Exception:
+            stored_validations = {}
+
+    if api_keys is not None:
+        for prov, raw_val in api_keys.items():
+            prov_key = prov.strip().lower()
+            if raw_val is None or raw_val.strip() == "":
+                stored_keys.pop(prov_key, None)
+                if not (key_validations and prov_key in key_validations):
+                    stored_validations.pop(prov_key, None)
+            else:
+                norm_key = normalize_api_key(raw_val)
+                old_key = stored_keys.get(prov_key)
+                stored_keys[prov_key] = norm_key
+                if old_key != norm_key and not (key_validations and prov_key in key_validations):
+                    stored_validations.pop(prov_key, None)
+
+    if key_validations is not None:
+        for prov, v in key_validations.items():
+            prov_key = prov.strip().lower()
+            if v is None:
+                stored_validations.pop(prov_key, None)
+            elif isinstance(v, dict):
+                stored_validations[prov_key] = v
+
+    ws.llm_api_keys = json.dumps(stored_keys) if stored_keys else None
+    ws.llm_key_validations = json.dumps(stored_validations) if stored_validations else None
+
     ws.updated_at = _now()
     session.add(ws)
     await session.commit()
     await session.refresh(ws)
 
-    # Sync runtime settings
+    # Sync runtime settings (never assign ws.llm_compat_base_url to runtime_settings.llm.base_url)
+    sync_runtime_credentials(stored_keys, stored_validations, ws.llm_compat_base_url)
+
     runtime_settings = get_settings()
     if ws.high_confidence_threshold is not None:
         runtime_settings.ingestion.high_confidence_threshold = ws.high_confidence_threshold
-    if ws.default_llm_provider:
+    if default_llm_provider is not None:
+        runtime_settings.llm.provider = ws.default_llm_provider or "openai"
+    elif ws.default_llm_provider:
         runtime_settings.llm.provider = ws.default_llm_provider
-    if ws.default_llm_model:
+    if default_llm_model is not None:
+        runtime_settings.llm.model_name = ws.default_llm_model or ""
+    elif ws.default_llm_model:
         runtime_settings.llm.model_name = ws.default_llm_model
 
     return ws

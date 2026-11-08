@@ -21,6 +21,8 @@ import type {
   ThreadDetailResponse,
   ThreadListResponse,
   UpdateDocumentMetadataRequest,
+  VerifyKeyPayload,
+  VerifyKeyResponse,
   WorkspaceSettings,
   WorkspaceSettingsUpdatePayload,
 } from "./types";
@@ -420,4 +422,15 @@ export async function updateWorkspaceSettings(
     body: JSON.stringify(payload),
   });
   return handleResponse<WorkspaceSettings>(res);
+}
+
+export async function verifyLlmKey(
+  payload: VerifyKeyPayload
+): Promise<VerifyKeyResponse> {
+  const res = await fetch(`${API_BASE}/settings/verify-key`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleResponse<VerifyKeyResponse>(res);
 }

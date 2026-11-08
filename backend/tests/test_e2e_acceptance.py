@@ -41,6 +41,8 @@ from src.rag.reranker import FlashRankReranker, set_reranker
 from src.rag.retriever import set_active_qdrant_client
 from src.rag.state import Citation, format_citation_source
 
+pytest_plugins = ["tests.conftest"]
+
 MIME_BY_EXT: dict[str, str] = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -94,6 +96,8 @@ async def _poll_until_ready(client: AsyncClient, doc_id: str, timeout_s: float =
         last_data = resp.json()
         if last_data["status"] == "ready":
             return last_data
+        if last_data["status"] == "awaiting_approval":
+            await client.post(f"/api/v1/documents/{doc_id}/approve-classification", json={})
         if last_data["status"] == "failed":
             raise AssertionError(f"Ingestion failed for {doc_id}: {last_data}")
         await asyncio.sleep(0.05)
@@ -239,6 +243,17 @@ async def test_e2e_acceptance_ac1_to_ac5_offline(
     capturing_llm = CapturingFakeChatModel(
         messages=iter(
             [
+                # Turn 1 - pre-routing classification fallback
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "primary_domain": "economics",
+                            "primary_subdomain": "econ.financial_reporting",
+                            "confidence": 0.9,
+                            "reasoning": "Financial analysis query",
+                        }
+                    )
+                ),
                 # Turn 1 - rewrite_query
                 AIMessage(
                     content=json.dumps(
@@ -260,6 +275,17 @@ async def test_e2e_acceptance_ac1_to_ac5_offline(
                 # Turn 1 - synthesize
                 AIMessage(
                     content="Operating margin expanded by 3.2% year-over-year in Q3 2025 due to supply chain automation [1]."
+                ),
+                # Turn 2 - pre-routing classification fallback
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "primary_domain": "economics",
+                            "primary_subdomain": "econ.financial_reporting",
+                            "confidence": 0.9,
+                            "reasoning": "Follow up financial metrics query",
+                        }
+                    )
                 ),
                 # Turn 2 - rewrite_query (follow-up resolving 'it' / 'that quarter' from Turn 1)
                 AIMessage(
@@ -337,7 +363,7 @@ async def test_e2e_acceptance_ac1_to_ac5_offline(
     assert t2_done["citations"][0]["source_filename"] == "q3_financial_report.pdf"
 
     # Verify Turn 2 rewrite_query prompt included Turn 1 conversation history from AsyncSqliteSaver
-    turn2_rewrite_messages = capturing_llm.captured_prompts[3]
+    turn2_rewrite_messages = capturing_llm.captured_prompts[5]
     rewrite_human_text = turn2_rewrite_messages[-1].content
     assert "What drove operating margin expansion in Q3 2025?" in rewrite_human_text
     assert "Operating margin expanded by 3.2%" in rewrite_human_text
@@ -391,6 +417,16 @@ async def test_e2e_acceptance_ac1_to_ac5_offline(
     override_fake_llm = GenericFakeChatModel(
         messages=iter(
             [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "primary_domain": "engineering",
+                            "primary_subdomain": "eng.software",
+                            "confidence": 0.9,
+                            "reasoning": "Architecture query",
+                        }
+                    )
+                ),
                 AIMessage(
                     content=json.dumps(
                         {

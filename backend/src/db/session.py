@@ -635,6 +635,19 @@ async def init_db(engine: AsyncEngine) -> None:
                     if col_name not in existing_dom_cols:
                         sync_conn.execute(text(ddl))
 
+            # 4. Inspect workspace_settings table
+            ws_cols_info = sync_conn.execute(text("PRAGMA table_info(workspace_settings)")).fetchall()
+            if ws_cols_info:
+                existing_ws_cols = {col[1] for col in ws_cols_info}
+                ws_migrations = [
+                    ("llm_api_keys", "ALTER TABLE workspace_settings ADD COLUMN llm_api_keys TEXT"),
+                    ("llm_key_validations", "ALTER TABLE workspace_settings ADD COLUMN llm_key_validations TEXT"),
+                    ("llm_compat_base_url", "ALTER TABLE workspace_settings ADD COLUMN llm_compat_base_url VARCHAR"),
+                ]
+                for col_name, ddl in ws_migrations:
+                    if col_name not in existing_ws_cols:
+                        sync_conn.execute(text(ddl))
+
         await conn.run_sync(_migrate_columns)
 
     # 3. Seed taxonomy, polysemy starter lexicon, and backfill legacy records
@@ -752,6 +765,29 @@ async def init_db(engine: AsyncEngine) -> None:
                 runtime_settings.llm.provider = ws.default_llm_provider
             if ws.default_llm_model:
                 runtime_settings.llm.model_name = ws.default_llm_model
+
+            # Sync persisted credentials & validations to runtime LLM module state
+            from src.rag.llm import sync_runtime_credentials
+
+            api_keys: dict[str, str] = {}
+            if ws.llm_api_keys:
+                try:
+                    parsed_keys = json.loads(ws.llm_api_keys)
+                    if isinstance(parsed_keys, dict):
+                        api_keys = {str(k): str(v) for k, v in parsed_keys.items() if v is not None}
+                except Exception:
+                    pass
+
+            validations: dict[str, dict[str, Any]] = {}
+            if ws.llm_key_validations:
+                try:
+                    parsed_vals = json.loads(ws.llm_key_validations)
+                    if isinstance(parsed_vals, dict):
+                        validations = {str(k): v for k, v in parsed_vals.items() if isinstance(v, dict)}
+                except Exception:
+                    pass
+
+            sync_runtime_credentials(api_keys, validations, ws.llm_compat_base_url)
 
 
 _engine: AsyncEngine | None = None

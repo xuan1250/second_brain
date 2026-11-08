@@ -875,24 +875,10 @@ class LayaDomainClassifier(BaseDomainClassifier):
         )
 
         try:
-            # Attempt to instantiate LLM based on configured provider
-            prov = settings.llm.provider.lower()
-            llm = None
-            if prov == "openai":
-                from langchain_openai import ChatOpenAI
+            from src.rag.llm import get_chat_model, resolve_provider_and_model
 
-                llm = ChatOpenAI(model=settings.llm.model_name or "gpt-4o", temperature=0.0)
-            elif prov == "anthropic":
-                from langchain_anthropic import ChatAnthropic
-
-                llm = ChatAnthropic(model=settings.llm.model_name or "claude-3-5-sonnet-20241022", temperature=0.0)
-            elif prov == "deepseek":
-                from langchain_deepseek import ChatDeepSeek
-
-                llm = ChatDeepSeek(model=settings.llm.model_name or "deepseek-chat", temperature=0.0)
-
-            if llm is None:
-                return None
+            prov, _ = resolve_provider_and_model(settings=settings)
+            llm = get_chat_model(settings=settings, temperature=0.0)
 
             response = await llm.ainvoke([system_msg, human_msg])
             content = response.content if hasattr(response, "content") else str(response)

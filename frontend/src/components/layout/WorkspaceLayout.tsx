@@ -14,6 +14,8 @@ import {
   Settings,
 } from "lucide-react";
 import { useSystemStats } from "../../hooks/useDocuments";
+import { useWorkspaceSettingsQuery } from "../../hooks/useDomains";
+import { useWorkspace } from "../../lib/workspaceStore";
 import { ChatAssistant } from "../chat/ChatAssistant";
 import { KnowledgeLibrary } from "../library/KnowledgeLibrary";
 import { DocumentInspector } from "../viewer/DocumentInspector";
@@ -26,9 +28,34 @@ export const WorkspaceLayout: React.FC = () => {
 
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  const {
+    isSettingsModalOpen,
+    setSettingsModalOpen,
+    settingsModalTab,
+    openSettingsModal,
+    selectedProvider,
+  } = useWorkspace();
 
   const { data: stats } = useSystemStats();
+  const { data: wsSettings } = useWorkspaceSettingsQuery();
+
+  const activeProv =
+    selectedProvider ||
+    wsSettings?.default_llm_provider ||
+    stats?.llm?.provider ||
+    "openai";
+
+  const providers = wsSettings?.available_providers?.length
+    ? wsSettings.available_providers
+    : (stats?.available_providers ?? []);
+
+  const activeOption = providers.find((p) => p.provider === activeProv);
+  const isMissingKey = Boolean(activeOption && !activeOption.configured);
+  const isInvalidKey = Boolean(
+    activeOption && activeOption.validation_status === "invalid"
+  );
+  const hasProviderIssue = isMissingKey || isInvalidKey;
 
   const toggleLeftPanel = () => {
     const panel = leftPanelRef.current;
@@ -131,12 +158,27 @@ export const WorkspaceLayout: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => setIsSettingsOpen(true)}
-            title="Workspace Settings & Dynamic Taxonomy"
-            className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1 text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
+            onClick={() =>
+              openSettingsModal(hasProviderIssue ? "ingestion" : "domains")
+            }
+            title={
+              hasProviderIssue
+                ? isInvalidKey
+                  ? `Invalid API key for ${activeOption?.label || activeProv}. Click to configure.`
+                  : `Missing API key for ${activeOption?.label || activeProv}. Click to configure.`
+                : "Workspace Settings & Dynamic Taxonomy"
+            }
+            className="relative flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1 text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
           >
             <Settings className="h-3.5 w-3.5 text-indigo-400" />
             <span className="font-medium">Settings</span>
+            {hasProviderIssue && (
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  isInvalidKey ? "bg-rose-500 animate-pulse" : "bg-amber-400"
+                }`}
+              />
+            )}
           </button>
 
           <button
@@ -158,8 +200,9 @@ export const WorkspaceLayout: React.FC = () => {
         </div>
 
         <SettingsModal
-          open={isSettingsOpen}
-          onOpenChange={setIsSettingsOpen}
+          open={isSettingsModalOpen}
+          onOpenChange={setSettingsModalOpen}
+          initialTab={settingsModalTab}
         />
       </header>
 

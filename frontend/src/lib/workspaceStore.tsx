@@ -74,6 +74,10 @@ export interface WorkspaceStateContextValue {
   setActiveThreadId: (threadId: string | null) => void;
   setSelectedProvider: (provider: string) => void;
   setSelectedModel: (model: string) => void;
+  isSettingsModalOpen: boolean;
+  settingsModalTab: "domains" | "lexicon" | "ingestion";
+  openSettingsModal: (tab?: "domains" | "lexicon" | "ingestion") => void;
+  setSettingsModalOpen: (open: boolean) => void;
 }
 
 const WorkspaceStateContext = createContext<WorkspaceStateContextValue | null>(
@@ -138,6 +142,25 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch {
       // ignore storage errors
     }
+  }, []);
+
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
+  const [settingsModalTab, setSettingsModalTab] = useState<
+    "domains" | "lexicon" | "ingestion"
+  >("domains");
+
+  const openSettingsModal = useCallback(
+    (tab?: "domains" | "lexicon" | "ingestion") => {
+      if (tab) {
+        setSettingsModalTab(tab);
+      }
+      setIsSettingsModalOpen(true);
+    },
+    []
+  );
+
+  const setSettingsModalOpen = useCallback((open: boolean) => {
+    setIsSettingsModalOpen(open);
   }, []);
 
   const currentDomainFilter = useMemo<DomainFilterConfig>(() => {
@@ -297,6 +320,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       setActiveThreadId,
       setSelectedProvider,
       setSelectedModel,
+      isSettingsModalOpen,
+      settingsModalTab,
+      openSettingsModal,
+      setSettingsModalOpen,
     }),
     [
       selectedDocumentId,
@@ -317,6 +344,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       clearActiveCitation,
       toggleFilterDocId,
       clearFilterDocIds,
+      isSettingsModalOpen,
+      settingsModalTab,
+      openSettingsModal,
+      setSettingsModalOpen,
     ]
   );
 

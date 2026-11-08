@@ -219,5 +219,8 @@ class WorkspaceSettings(SQLModel, table=True):
     high_confidence_threshold: float = Field(default=0.85)
     default_llm_provider: Optional[str] = Field(default=None)
     default_llm_model: Optional[str] = Field(default=None)
+    llm_api_keys: Optional[str] = Field(default=None)
+    llm_key_validations: Optional[str] = Field(default=None)
+    llm_compat_base_url: Optional[str] = Field(default=None)
     updated_at: datetime = Field(default_factory=_now)
 

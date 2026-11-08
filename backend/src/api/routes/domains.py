@@ -1,11 +1,13 @@
 """FastAPI endpoints for Domain Taxonomy, Lexicon, and Workspace Settings management."""
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from langchain_core.messages import HumanMessage
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,13 +27,27 @@ from src.api.schemas import (
     LexiconCreateRequest,
     LexiconItemResponse,
     LexiconUpdateRequest,
+    ProviderOption,
     SubdomainCreateRequest,
     SubdomainItemResponse,
     SubdomainUpdateRequest,
+    VerifyKeyRequest,
+    VerifyKeyResponse,
     WorkspaceSettingsResponse,
     WorkspaceSettingsUpdateRequest,
+    _validate_safe_base_url,
 )
 from src.config import Settings
+from src.rag.llm import (
+    _key_validations,
+    compute_key_hash,
+    get_chat_model,
+    is_valid_api_key,
+    mask_api_key,
+    normalize_api_key,
+    resolve_provider_credential,
+    sanitize_llm_error,
+)
 from src.db.models import (
     Document,
     DomainLexicon,
@@ -696,6 +712,7 @@ async def get_settings_endpoint(
         high_confidence_threshold=ws.high_confidence_threshold,
         default_llm_provider=ws.default_llm_provider,
         default_llm_model=ws.default_llm_model,
+        llm_compat_base_url=ws.llm_compat_base_url,
         available_providers=available_providers,
         updated_at=ws.updated_at,
     )
@@ -715,6 +732,8 @@ async def update_settings_endpoint(
         high_confidence_threshold=payload.high_confidence_threshold,
         default_llm_provider=payload.default_llm_provider,
         default_llm_model=payload.default_llm_model,
+        api_keys=payload.api_keys,
+        llm_compat_base_url=payload.llm_compat_base_url,
     )
 
     # Sync runtime settings
@@ -733,6 +752,243 @@ async def update_settings_endpoint(
         high_confidence_threshold=ws.high_confidence_threshold,
         default_llm_provider=ws.default_llm_provider,
         default_llm_model=ws.default_llm_model,
+        llm_compat_base_url=ws.llm_compat_base_url,
         available_providers=available_providers,
         updated_at=ws.updated_at,
+    )
+
+
+@router.post("/settings/verify-key", response_model=VerifyKeyResponse)
+async def verify_key_endpoint(
+    payload: VerifyKeyRequest,
+    session: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_app_settings),
+) -> VerifyKeyResponse:
+    """Verify an API key live via bounded LLM ping and optionally persist to WorkspaceSettings."""
+    # 1. Ignore payload.base_url unless provider == "openai_compatible"
+    raw_base_url = payload.base_url if payload.provider == "openai_compatible" else None
+
+    # 2. Resolve current credentials
+    resolved_key, resolved_source, resolved_base_url = resolve_provider_credential(payload.provider, settings)
+
+    # 3. For openai_compatible, resolve candidate_base_url & validate safety
+    candidate_base_url: str | None = None
+    if payload.provider == "openai_compatible":
+        candidate_base_url = (
+            raw_base_url.strip() if raw_base_url and raw_base_url.strip() else resolved_base_url
+        )
+        if candidate_base_url:
+            try:
+                candidate_base_url = _validate_safe_base_url(candidate_base_url)
+            except ValueError as ve:
+                _, all_opts = _build_provider_options(settings)
+                opt = next((o for o in all_opts if o.provider == payload.provider), None)
+                return VerifyKeyResponse(
+                    provider=payload.provider,
+                    valid=False,
+                    validation_status="invalid",
+                    validation_error=str(ve),
+                    key_source=resolved_source,
+                    masked_key=mask_api_key(resolved_key),
+                    tested_model="",
+                    provider_option=opt or ProviderOption(
+                        provider=payload.provider,
+                        label=payload.provider,
+                        configured=False,
+                        validation_status="invalid",
+                        validation_error=str(ve),
+                    ),
+                )
+
+        # Anti-exfiltration check:
+        # If payload.base_url is a new unsaved URL (candidate_base_url != resolved_base_url)
+        # and not (payload.api_key and payload.api_key.strip())
+        if candidate_base_url != resolved_base_url and not (payload.api_key and payload.api_key.strip()):
+            _, all_opts = _build_provider_options(settings)
+            opt = next((o for o in all_opts if o.provider == payload.provider), None)
+            err_msg = "Please enter the API key when verifying a new Base URL."
+            return VerifyKeyResponse(
+                provider=payload.provider,
+                valid=False,
+                validation_status="invalid",
+                validation_error=err_msg,
+                key_source=resolved_source,
+                masked_key=mask_api_key(resolved_key),
+                tested_model="",
+                provider_option=opt or ProviderOption(
+                    provider=payload.provider,
+                    label=payload.provider,
+                    configured=False,
+                    validation_status="invalid",
+                    validation_error=err_msg,
+                ),
+            )
+
+    # 4. Determine candidate_key
+    has_explicit_key = bool(payload.api_key and payload.api_key.strip())
+    candidate_key = normalize_api_key(payload.api_key) if has_explicit_key else resolved_key
+    candidate_source: Literal["ui", "env", "none"] = "ui" if has_explicit_key else resolved_source
+
+    # Check missing key
+    if not candidate_key:
+        _, all_opts = _build_provider_options(settings)
+        opt = next((o for o in all_opts if o.provider == payload.provider), None)
+        err_msg = "No API key configured in Workspace Settings or backend/.env."
+        return VerifyKeyResponse(
+            provider=payload.provider,
+            valid=False,
+            validation_status="missing",
+            validation_error=err_msg,
+            key_source="none",
+            masked_key=None,
+            tested_model="",
+            provider_option=opt or ProviderOption(
+                provider=payload.provider,
+                label=payload.provider,
+                configured=False,
+                validation_status="missing",
+                validation_error=err_msg,
+            ),
+        )
+
+    # Check format validity
+    if not is_valid_api_key(candidate_key):
+        _, all_opts = _build_provider_options(settings)
+        opt = next((o for o in all_opts if o.provider == payload.provider), None)
+        err_msg = "Invalid API key format (placeholders and whitespace/control characters are not allowed)."
+        return VerifyKeyResponse(
+            provider=payload.provider,
+            valid=False,
+            validation_status="invalid",
+            validation_error=err_msg,
+            key_source=candidate_source,
+            masked_key=mask_api_key(candidate_key),
+            tested_model="",
+            provider_option=opt or ProviderOption(
+                provider=payload.provider,
+                label=payload.provider,
+                configured=False,
+                validation_status="invalid",
+                validation_error=err_msg,
+            ),
+        )
+
+    # 5. Resolve model for ping
+    test_model = (payload.model.strip() if payload.model and payload.model.strip() else "")
+    if not test_model:
+        prov_entry = settings.llm.providers.get(payload.provider)
+        test_model = (prov_entry.model_name.strip() if prov_entry and prov_entry.model_name else "")
+    if not test_model:
+        fallback_models = {
+            "openai": "gpt-4o",
+            "anthropic": "claude-sonnet-4-5-20250929",
+            "deepseek": "deepseek-chat",
+            "openai_compatible": "glm-4-plus",
+        }
+        test_model = fallback_models.get(payload.provider, "gpt-4o")
+
+    # 6. Live ping (5.0s bounded)
+    k_hash = compute_key_hash(
+        candidate_key,
+        candidate_base_url if payload.provider == "openai_compatible" else None,
+    )
+
+    llm_kwargs: dict[str, Any] = {
+        "provider_override": payload.provider,
+        "model_override": test_model,
+        "settings": settings,
+        "api_key": candidate_key,
+        "max_tokens": 1,
+        "timeout": 5.0,
+        "max_retries": 0,
+    }
+    if payload.provider == "openai_compatible" and candidate_base_url:
+        llm_kwargs["base_url"] = candidate_base_url
+
+    valid = False
+    validation_status: Literal["valid", "invalid"] = "invalid"
+    validation_error: str | None = None
+
+    try:
+        llm = get_chat_model(**llm_kwargs)
+        await asyncio.wait_for(llm.ainvoke([HumanMessage(content="ping")]), timeout=5.0)
+        valid = True
+        validation_status = "valid"
+        validation_error = None
+    except Exception as exc:
+        clean_err, _ = sanitize_llm_error(exc, provider=payload.provider, candidate_key=candidate_key)
+        valid = False
+        validation_status = "invalid"
+        validation_error = clean_err
+
+    # Update in-memory / persistent state
+    now_iso = datetime.now(timezone.utc).isoformat()
+    val_entry = {
+        "status": validation_status,
+        "error": validation_error,
+        "key_hash": k_hash,
+        "checked_at": now_iso,
+    }
+
+    if payload.save_if_valid:
+        api_keys_update = (
+            {payload.provider: candidate_key}
+            if has_explicit_key
+            else None
+        )
+        compat_url_update = (
+            candidate_base_url
+            if (payload.provider == "openai_compatible" and raw_base_url is not None)
+            else None
+        )
+        await update_workspace_settings(
+            session=session,
+            api_keys=api_keys_update,
+            key_validations={payload.provider: val_entry},
+            llm_compat_base_url=compat_url_update,
+        )
+    else:
+        _key_validations[payload.provider] = val_entry
+
+    _, all_opts = _build_provider_options(settings)
+    matching_option = next(
+        (opt for opt in all_opts if opt.provider == payload.provider),
+        ProviderOption(
+            provider=payload.provider,
+            label=payload.provider,
+            configured=bool(candidate_key),
+            default_model=test_model,
+            key_source=candidate_source,
+            masked_key=mask_api_key(candidate_key),
+            validation_status=validation_status,
+            validation_error=validation_error,
+            base_url=candidate_base_url if payload.provider == "openai_compatible" else None,
+        ),
+    )
+
+    if not payload.save_if_valid:
+        matching_option = matching_option.model_copy(
+            update={
+                "validation_status": validation_status,
+                "validation_error": validation_error,
+                "masked_key": mask_api_key(candidate_key) or matching_option.masked_key,
+                "key_source": candidate_source if candidate_key else matching_option.key_source,
+                "configured": (
+                    bool(candidate_key and candidate_base_url)
+                    if payload.provider == "openai_compatible"
+                    else bool(candidate_key)
+                ),
+                "base_url": candidate_base_url if payload.provider == "openai_compatible" else matching_option.base_url,
+            }
+        )
+
+    return VerifyKeyResponse(
+        provider=payload.provider,
+        valid=valid,
+        validation_status=validation_status,
+        validation_error=validation_error,
+        key_source=matching_option.key_source,
+        masked_key=matching_option.masked_key,
+        tested_model=test_model,
+        provider_option=matching_option,
     )

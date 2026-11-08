@@ -34,7 +34,13 @@ from src.ingestion.classifier import (
 )
 from src.ingestion.indexer import BaseEmbedder, SparseEncoder
 from src.rag.grader import ContextGrader, format_documents_xml
-from src.rag.llm import get_chat_model, invoke_structured_output, resolve_provider_and_model
+from src.rag.llm import (
+    get_chat_model,
+    invoke_structured_output,
+    record_key_validation,
+    resolve_provider_and_model,
+    sanitize_llm_error,
+)
 from src.rag.reranker import FlashRankReranker, get_reranker
 from src.rag.retriever import HybridRetriever
 from src.rag.state import AgentState, Citation, format_citation_source
@@ -1133,6 +1139,7 @@ async def stream_chat_response(
     """
     active_thread_id = (thread_id or "").strip() or uuid.uuid4().hex
     clean_query = (query or "").strip()
+    active_provider: str | None = provider
 
     try:
         if not clean_query:
@@ -1319,11 +1326,17 @@ async def stream_chat_response(
             "data": done_payload,
         }
     except Exception as exc:
+        clean_err, is_auth = sanitize_llm_error(exc, provider=active_provider)
+        if is_auth and active_provider:
+            try:
+                record_key_validation(active_provider, status="invalid", error=clean_err, settings=get_settings())
+            except Exception:
+                pass
         yield {
             "event": "error",
             "data": {
                 "thread_id": active_thread_id,
-                "message": str(exc),
-                "error": str(exc),
+                "message": clean_err,
+                "error": clean_err,
             },
         }
