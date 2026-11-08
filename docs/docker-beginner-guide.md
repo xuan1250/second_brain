@@ -120,7 +120,7 @@ The application runs as two orchestrated Docker services communicating over an i
 |                                                 |   |                                   |
 |  - Hybrid Dense (1024-d) + Sparse Vectors       |   |  - SQLite (second_brain.db)       |
 |  - Payload Filtering by Document ID             |   |  - LangGraph (chat_history.db)    |
-|  - Reciprocal Rank Fusion (RRF)                 |   |  - Stored in Docker volume app_db |
+|  - Reciprocal Rank Fusion (RRF)                 |   |  - Stored directly in ./data/db   |
 |  - Stored in Docker volume qdrant_storage       |   |                                   |
 +-------------------------------------------------+   +-----------------------------------+
 ```
@@ -377,11 +377,11 @@ By default, Second Brain automatically classifies uploaded documents into 4 doma
 # Local multilingual classifier model (default: convaiinnovations/laya-multilingual)
 LAYA_MODEL_NAME=convaiinnovations/laya-multilingual
 
-# Whether to fall back to cloud LLM if classification confidence is low (default: false)
-INGESTION_ENABLE_LLM_CLASSIFICATION_FALLBACK=false
+# Whether to fall back to cloud LLM if classification confidence is low (default: true)
+INGESTION_ENABLE_LLM_CLASSIFICATION_FALLBACK=true
 
-# Confidence cutoff (0.0 to 1.0) to bypass human review under Auto (High Confidence) mode (default: 0.70)
-INGESTION_HIGH_CONFIDENCE_THRESHOLD=0.70
+# Confidence cutoff (0.50 to 0.99) to bypass human review under Auto (High Confidence) mode (default: 0.85)
+INGESTION_HIGH_CONFIDENCE_THRESHOLD=0.85
 ```
 
 ---
@@ -720,22 +720,25 @@ Second Brain includes an automated three-tiered memory reclamation engine:
    ```bash
    curl.exe -X POST http://127.0.0.1:8000/api/v1/system/memory/reclaim
    ```
+   *(Also triggers background compaction and `VACUUM` on `second_brain.db` and `chat_history.db` when no document ingestion is active).*
 
 ---
 
 ### Data Storage & Persistence Architecture
 
-Your data is safely stored in three distinct locations that survive container restarts and rebuilds:
+Your data is safely stored in persistent locations that survive container restarts and rebuilds:
 
 1. **Host Directory (`./data`)**:
+   - `data/db/`: SQLite databases (`second_brain.db` for document metadata and `chat_history.db` for LangGraph conversation state). Directly accessible on the host machine.
    - `data/raw/`: Original uploaded files (named by SHA-256 hash).
    - `data/parsed/`: Cached Docling AST representations (`{sha}.json`).
    - `data/markdown/`: Extracted Markdown mirrors (`{sha}.md`).
    - `data/models/`: Downloaded HuggingFace model weights (`bge-m3`, FlashRank).
-2. **Named Volume `app_db`**:
-   - Contains SQLite databases (`second_brain.db` for document metadata and `chat_history.db` for LangGraph conversation state).
-3. **Named Volume `qdrant_storage`**:
-   - Contains Qdrant hybrid vector collections, payload indices, and point records.
+2. **Named Volume `second-brain_qdrant_storage`**:
+   - Contains Qdrant hybrid vector collections, payload indices, and point records (configured with `on_disk=True` for low RAM consumption). Uses a named volume for optimal filesystem performance on Docker Desktop.
+
+> [!NOTE]
+> **Windows WSL2 Host Inspection Rule**: If you inspect `data/db/*.db` using tools like DB Browser for SQLite or python scripts on Windows while Docker is running, always open the database files in **read-only mode** (`?mode=ro`). Windows and Linux cannot reliably coordinate SQLite WAL shared-memory (`-shm`) locks when both write simultaneously. If you need to make manual edits on the host, stop the container first (`docker compose stop second-brain`).
 
 ---
 
@@ -746,14 +749,13 @@ Your data is safely stored in three distinct locations that survive container re
 # 1. Stop containers gracefully
 docker compose down
 
-# 2. Backup the ./data folder
+# 2. Backup the ./data folder (includes SQLite databases, documents, and models)
 # Windows PowerShell:
 Compress-Archive -Path data -DestinationPath second_brain_data_backup.zip
 # macOS / Linux:
 tar -czvf second_brain_data_backup.tar.gz data/
 
-# 3. Backup Docker volumes using a temporary container
-docker run --rm -v second-brain_app_db:/db -v ${PWD}:/backup alpine tar -czf /backup/app_db.tar.gz -C /db .
+# 3. Backup Qdrant Docker volume using a temporary container
 docker run --rm -v second-brain_qdrant_storage:/qdrant -v ${PWD}:/backup alpine tar -czf /backup/qdrant_storage.tar.gz -C /qdrant .
 ```
 
@@ -762,8 +764,7 @@ docker run --rm -v second-brain_qdrant_storage:/qdrant -v ${PWD}:/backup alpine 
 # 1. Restore data directory
 tar -xzvf second_brain_data_backup.tar.gz
 
-# 2. Restore volumes
-docker run --rm -v second-brain_app_db:/db -v ${PWD}:/backup alpine tar -xzf /backup/app_db.tar.gz -C /db
+# 2. Restore Qdrant volume
 docker run --rm -v second-brain_qdrant_storage:/qdrant -v ${PWD}:/backup alpine tar -xzf /backup/qdrant_storage.tar.gz -C /qdrant
 
 # 3. Start stack
@@ -780,11 +781,11 @@ If you ever want to wipe all documents, chat threads, and vector collections to 
 # 1. Stop containers and destroy database volumes
 docker compose down -v
 
-# 2. Delete cached document files
+# 2. Delete host database and cached document files
 # Windows PowerShell:
-Remove-Item -Recurse -Force data\raw\*, data\parsed\*, data\markdown\*
+Remove-Item -Recurse -Force data\db\*, data\raw\*, data\parsed\*, data\markdown\*
 # macOS / Linux:
-rm -rf data/raw/* data/parsed/* data/markdown/*
+rm -rf data/db/* data/raw/* data/parsed/* data/markdown/*
 ```
 *(Your downloaded AI model weights in `data/models` will be preserved so you don't have to re-download 2 GB of models!)*
 
@@ -944,6 +945,54 @@ If you want a completely offline, air-gapped Second Brain using local open-sourc
    ```bash
    docker compose exec second-brain python -m src.ingestion.cli /app/data/raw --force
    ```
+
+---
+
+### Q11: `docker compose down -v` vs `docker compose down` & Split Persistence
+
+**Question**: Why did my vector search stop finding chunks even though all my documents still show up in the web UI after running `docker compose down -v`?  
+**Cause**: **Dual-Store Architecture Lifecycle**.
+- SQLite relational databases (`second_brain.db` and `chat_history.db`) are stored directly on your host machine inside `./data/db/` via a bind mount (`./data:/app/data`).
+- Qdrant vector embeddings are stored inside a managed Docker named volume (`second-brain_qdrant_storage`).
+
+When you pass the `-v` flag (`docker compose down -v`), Docker deletes the named volume (`second-brain_qdrant_storage`), but leaves host filesystem directories (`./data/`) completely untouched! As a result, SQLite retains all document metadata, while Qdrant resets to 0 vectors.
+
+**Prevention & Recovery**:
+1. **Normal shutdowns**: Always run `docker compose down` (without `-v`). This keeps both SQLite and Qdrant in perfect sync.
+2. **Recovering if `-v` was run**:
+   - Re-index your stored documents from raw files:
+     ```bash
+     docker compose exec second-brain python -m src.ingestion.cli /app/data/raw --force
+     ```
+   - Or restore the Qdrant volume backup using the snippet in [Step 8](#to-restore-from-backup).
+3. **Host inspection rule (WSL2/9P)**: While the Docker container is active, open host SQLite databases in **read-only** mode (e.g., `sqlite3 "file:data/db/second_brain.db?mode=ro"` or read-only checkbox in DB Browser) to avoid conflicting with the Linux container's WAL locks across the WSL2 9P filesystem bridge.
+
+---
+
+### Q12: Windows PowerShell command syntax traps (`curl.exe`, splatting `@`, `;` vs `&&`)
+
+**Question**: Why do API test commands fail in PowerShell with errors like `Invoke-WebRequest: parameter cannot be found`, `splatting operator '@'`, or `token '&&' is not a valid statement separator`?  
+**Cause**: Windows PowerShell has alias collisions and parses symbols differently from POSIX bash shells.
+
+**Solutions**:
+1. **Use `curl.exe`, not `curl`**: In PowerShell, `curl` is an alias for `Invoke-WebRequest`. Always explicitly type `curl.exe`:
+   ```powershell
+   curl.exe -fsS http://127.0.0.1:8000/api/v1/system/health
+   ```
+2. **Quote `@` symbol for file payloads**: In PowerShell, `@` triggers variable splatting. Always enclose file payload references in quotes:
+   ```powershell
+   # Correct:
+   curl.exe -fsS -X POST http://127.0.0.1:8000/api/v1/chat/completions -H "Content-Type: application/json" -d '@payload.json'
+   ```
+3. **Use `;` instead of `&&`**: PowerShell 5.1 does not recognize `&&` as a command separator. Use `;` instead:
+   ```powershell
+   cd backend; uv run python -m pytest --noconftest
+   ```
+4. **Escape inner quotes in inline JSON**:
+   ```powershell
+   curl.exe -fsS -X POST http://127.0.0.1:8000/api/v1/chat/completions -H "Content-Type: application/json" -d "{\"message\":\"hello\",\"domain\":\"general\"}"
+   ```
+5. **Node / NPM script policy**: If PowerShell blocks script execution (`running scripts is disabled on this system`), invoke npm commands using `npm.cmd` (e.g. `npm.cmd run build`).
 
 ---
 

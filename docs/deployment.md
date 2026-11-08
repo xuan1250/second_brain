@@ -162,7 +162,7 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 | **ONNX Providers** | `docker compose exec second-brain python -c "import onnxruntime as ort; print(ort.get_available_providers())"` | Includes `'CUDAExecutionProvider'` |
 | **RapidOCR Detection** | `docker compose exec second-brain python -c "from rapidocr.inference_engine.onnxruntime.provider_config import ProviderConfig; pc = ProviderConfig({'use_cuda': True}); print('CUDA available:', pc.is_cuda_available())"` | `CUDA available: True` |
 | **Memory Telemetry** | `curl -fsS http://127.0.0.1:8000/api/v1/system/memory` | `{"process_rss_mb":...,"cuda_available":true,"worker_pool_active":...}` |
-| **Memory Reclaim** | `curl -fsS -X POST http://127.0.0.1:8000/api/v1/system/memory/reclaim` | `{"status":"ok","worker_pool_reclaimed":...,"cuda_cache_cleared":...}` |
+| **Memory Reclaim** | `curl -fsS -X POST http://127.0.0.1:8000/api/v1/system/memory/reclaim` | `{"status":"ok","worker_pool_reclaimed":...,"cuda_cache_cleared":...}` (also runs SQLite & checkpointer compaction + `VACUUM` when idle) |
 | **Pause Ingestion** | `curl -fsS -X POST http://127.0.0.1:8000/api/v1/system/ingestion/pause` | `{"status":"ok","ingestion_paused":true}` |
 | **Resume Ingestion** | `curl -fsS -X POST http://127.0.0.1:8000/api/v1/system/ingestion/resume` | `{"status":"ok","ingestion_paused":false}` |
 | **Document Retry** | `curl -fsS -X POST "http://127.0.0.1:8000/api/v1/documents/<doc_id>/retry"` | `{"id":"...","status":"queued",...}` |
@@ -173,8 +173,16 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 | **Batch Approve** | `curl -fsS -X POST -H "Content-Type: application/json" -d '{"document_ids":["<id1>","<id2>"]}' "http://127.0.0.1:8000/api/v1/documents/approve-batch"` | `{"approved_count":2,"failed_count":0,...}` |
 | **Domain Taxonomy** | `curl -fsS http://127.0.0.1:8000/api/v1/domains` | Active domains (`engineering`, `economics`, `law`, `general`, plus any custom domains), subdomains, and document counts |
 | **Workspace Settings** | `curl -fsS http://127.0.0.1:8000/api/v1/settings` | `{"id":"default","default_upload_mode":...,"default_approval_mode":...,"high_confidence_threshold":...}` |
+| **Chat Stream (SSE)** | `curl.exe -fsS -N -X POST "http://127.0.0.1:8000/api/v1/chat/completions" -H "Content-Type: application/json" -d "{\"message\":\"hello\",\"domain\":\"general\"}"` | Stream of Server-Sent Events (`event: token`, `event: agent_thought`, `data: ...`). Note: `POST /api/v1/chat` returns 405 Method Not Allowed; the active route is `/api/v1/chat/completions` |
 | **Legacy Vector Backfill** | `docker compose logs second-brain \| grep -i "backfill"` | Logs indicating `Backfilled legacy points in second_brain_knowledge with general domain` on boot |
 | **CRAG Architecture Presentation** | Open `docs/presentations/crag_workflow_explained.html` in browser | Interactive visualization of LangGraph nodes, epistemic triad, 3-tier DBs, and system prompts |
+
+> [!TIP]
+> **Windows PowerShell CLI Invocation Rules**:
+> - Always run `curl.exe` instead of `curl` (the bare `curl` alias in PowerShell invokes `Invoke-WebRequest` which fails on `-fsS` or `-d`).
+> - When passing a JSON payload file with `-d`, quote the `@` prefix (`-d '@payload.json'`) to avoid PowerShell's variable splatting operator error.
+> - Chain commands with `;` rather than `&&` (PowerShell 5.1 rejects `&&` as an invalid statement separator).
+> - Escape nested quotes in inline JSON strings (`-d "{\"key\":\"value\"}"`) or pass through a temporary `.json` file to avoid parameter truncation.
 
 
 ## Exposure model
@@ -193,11 +201,15 @@ The `Dockerfile` stages are commented inline; the design choices that are not ob
 
 | Mount | Type | Holds | Why this type |
 |---|---|---|---|
-| `qdrant_storage` → `/qdrant/storage` | named volume | Vector indexes | Qdrant storage on Docker Desktop bind mounts (Windows/macOS) risks corruption |
-| `app_db` → `/app/data/db` | named volume | `second_brain.db`, `chat_history.db` (SQLite WAL) | SQLite WAL locking is unreliable on bind mounts |
-| `./data` → `/app/data` | bind mount | `raw/`, `parsed/`, `markdown/`, `models/` caches | Kept browsable on the host; model caches survive rebuilds |
+| `second-brain_qdrant_storage` (`qdrant_storage` → `/qdrant/storage`) | named volume | Vector indexes (`second_brain_knowledge`) with `on_disk=True` for vectors and HNSW | Qdrant storage on Docker Desktop bind mounts (Windows/macOS) risks corruption; on-disk mapping keeps RAM usage low |
+| `./data` → `/app/data` | bind mount | `data/db/` (`second_brain.db`, `chat_history.db`), `raw/`, `parsed/`, `markdown/`, `models/` caches | SQLite databases live directly on host `./data/db` with zero volume shadowing; model caches and parsed ASTs survive rebuilds |
 
-`backend/config.yaml` and `backend/.env` are mounted **read-only**; edit them on the host and restart the `second-brain` service when changing API keys or infrastructure settings. Workspace-level defaults (`default_upload_mode`, `default_approval_mode`, `high_confidence_threshold`, `default_llm_provider`, `default_llm_model`) as well as custom domains, subdomains, and polysemy lexicon entries are persisted in SQLite (`app_db` volume) via `/api/v1/settings`, `/api/v1/domains`, and `/api/v1/lexicon` and apply live without container restarts.
+`backend/config.yaml` and `backend/.env` are single-file bind mounts (`:ro`); always ensure `backend/.env` exists as a regular file (`cp backend/.env.example backend/.env`) before running `docker compose up`, otherwise Docker Engine auto-creates a directory at `backend/.env` and aborts container startup (`ExitCode 127: not a directory`). Edit them on the host and restart the `second-brain` service when changing API keys or infrastructure settings. Workspace-level defaults (`default_upload_mode`, `default_approval_mode`, `high_confidence_threshold`, `default_llm_provider`, `default_llm_model`) as well as custom domains, subdomains, and polysemy lexicon entries are persisted in SQLite (`./data/db/second_brain.db`) via `/api/v1/settings`, `/api/v1/domains`, and `/api/v1/lexicon` and apply live without container restarts.
+
+### WSL2/9P WAL Guidelines
+When running Docker Desktop on Windows under the WSL2 backend, host Windows filesystem paths (`d:\4. Projects\second-brain\data\db\`) are mounted into the Linux container via the 9P network protocol. SQLite WAL mode uses shared memory (`-shm`) and lock protocols that do not coordinate reliably across the Windows/Linux OS boundary when both write simultaneously.
+- **Read-Only Host Access**: While the `second-brain` container is running, host tools (such as DB Browser for SQLite, SQLite CLI, or python inspection scripts) must open databases in read-only mode (`?mode=ro` / URI `sqlite:///.../second_brain.db?mode=ro`) or with immutable mode.
+- **Host Writes / Offline Migrations**: If running manual migrations or batch updates directly from the host Windows command line, stop the container first (`docker compose stop second-brain`) to ensure all WAL transactions are fully flushed to disk.
 
 **Linux hosts:** if `./data` is root-owned, give it to UID `10001` (`sudo chown -R 10001:10001 ./data`) or set `user:` on the `second-brain` service.
 
@@ -208,17 +220,21 @@ The `Dockerfile` stages are commented inline; the design choices that are not ob
 
 ## Backup and restore
 
-Volume names are prefixed with the Compose project name (the directory name by default). Find them with `docker volume ls`, then archive each named volume with a throwaway container:
+[`docker-compose.yml`](../docker-compose.yml) pins `name: second-brain`, with Qdrant vector data stored in `second-brain_qdrant_storage` and SQLite databases stored directly in `./data/db/` on the host:
 
 ```bash
-# backup (repeat for <project>_qdrant_storage)
-docker run --rm -v <project>_app_db:/volume:ro -v "$(pwd):/backup" \
-  debian:bookworm-slim tar czf /backup/app_db.tar.gz -C /volume .
+# 1. Back up Qdrant named volume
+docker run --rm -v second-brain_qdrant_storage:/volume:ro -v "$(pwd):/backup" \
+  debian:bookworm-slim tar czf /backup/qdrant_storage.tar.gz -C /volume .
 
-# restore — stop the stack first
+# 2. Back up SQLite databases and data files directly from host ./data
+tar czf data_backup.tar.gz data/db data/raw data/parsed data/markdown
+
+# Restore — stop the stack first
 docker compose stop second-brain qdrant
-docker run --rm -v <project>_app_db:/volume -v "$(pwd):/backup" \
-  debian:bookworm-slim bash -c "rm -rf /volume/* && tar xzf /backup/app_db.tar.gz -C /volume"
+docker run --rm -v second-brain_qdrant_storage:/volume -v "$(pwd):/backup" \
+  debian:bookworm-slim bash -c "rm -rf /volume/* && tar xzf /backup/qdrant_storage.tar.gz -C /volume"
+tar xzf data_backup.tar.gz
 docker compose start qdrant second-brain
 ```
 

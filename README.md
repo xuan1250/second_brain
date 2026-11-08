@@ -60,4 +60,4 @@ The first ingestion downloads ~2 GB of embedding models into `./data/models`. Se
 - [`backend/`](backend/) — FastAPI app, ingestion pipeline, CRAG engine, tests (Python 3.13, managed with `uv`)
 - [`frontend/`](frontend/) — React 19 + Vite + Tailwind CSS v4 SPA
 - [`docs/`](docs/) — Architecture, beginner setup guide, deployment, development, and interactive CRAG presentation
-- `data/` — local documents, parsed caches, and model caches (git-ignored)
+- `data/` — local documents, SQLite databases (`data/db/`), parsed caches, and model caches (git-ignored)
