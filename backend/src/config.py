@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -118,6 +120,15 @@ def load_settings(config_path: Path | str | None = None) -> Settings:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     settings = Settings(**raw)
     env = os.environ
+
+    is_pytest = "PYTEST_CURRENT_TEST" in env or "pytest" in sys.modules
+    if is_pytest and config_path is None:
+        pytest_tmp = Path(tempfile.gettempdir()) / f"second_brain_pytest_{os.getpid()}"
+        if not env.get("DATA_DIR"):
+            settings.storage.data_dir = str(pytest_tmp)
+        if not env.get("DB_DIR"):
+            settings.storage.db_dir = str(pytest_tmp / "db")
+
     if env.get("QDRANT_URL"):
         settings.qdrant.url = env["QDRANT_URL"]
     if env.get("DATA_DIR"):

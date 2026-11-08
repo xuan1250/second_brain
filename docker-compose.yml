@@ -36,12 +36,10 @@ services:
       FASTEMBED_CACHE_PATH: /app/data/models/fastembed
     volumes:
       - ./data:/app/data
-      - app_db:/app/data/db
       - ./backend/config.yaml:/app/backend/config.yaml:ro
       - ./backend/.env:/app/backend/.env:ro
     restart: unless-stopped
 
 volumes:
   qdrant_storage: {}
-  app_db: {}
 

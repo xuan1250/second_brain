@@ -17,7 +17,7 @@ from src.api.routes import chat, documents, domains, system
 from src.config import get_settings, load_settings
 from src.db import session as db_session_mod
 from src.db.qdrant import backfill_qdrant_legacy_payloads, get_qdrant_client, init_qdrant_collection
-from src.db.session import create_engine, create_session_factory, init_db
+from src.db.session import close_engine, create_engine, create_session_factory, init_db
 from src.ingestion.indexer import (
     BgeM3SparseEncoder,
     check_collection_sparse_mode_compatibility,
@@ -69,6 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db(engine)
     session_factory = create_session_factory(engine)
     db_session_mod._engine = engine
+    db_session_mod._engine_url = settings.sqlite_url
     db_session_mod._factory = session_factory
 
     # 3. Resolve shared main-process embedder, sparse encoder, and FlashRank reranker
@@ -164,9 +165,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 pass
             set_active_qdrant_client(None)
 
-        await engine.dispose()
-        db_session_mod._engine = None
-        db_session_mod._factory = None
+        await close_engine()
 
 
 def create_app() -> FastAPI:

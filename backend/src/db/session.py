@@ -1,6 +1,7 @@
 """Async SQLite engine + session factory (WAL, FK enforcement) and taxonomy migrations/seeds."""
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -563,8 +564,10 @@ def create_engine(url: str | None = None) -> AsyncEngine:
 
     @event.listens_for(engine.sync_engine, "connect")
     def _pragmas(dbapi_conn, _record):
+        journal_mode = os.environ.get("SQLITE_JOURNAL_MODE", "WAL").strip().upper()
         cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute(f"PRAGMA journal_mode={journal_mode}")
+        cur.execute("PRAGMA synchronous=NORMAL")
         cur.execute("PRAGMA foreign_keys=ON")
         cur.execute("PRAGMA busy_timeout=5000")
         cur.close()
@@ -716,6 +719,23 @@ async def init_db(engine: AsyncEngine) -> None:
                 )
             )
 
+            # Slim legacy document_chunks rows by clearing duplicate text and parent_content
+            await session.execute(
+                text(
+                    "UPDATE document_chunks "
+                    "SET text = '', parent_content = '' "
+                    "WHERE text != '' OR parent_content != ''"
+                )
+            )
+
+            # Clean up legacy orphaned ChatThread header with 0 checkpoints in chat_history.db
+            await session.execute(
+                text(
+                    "DELETE FROM chat_threads "
+                    "WHERE thread_id = '1de1cd57414b458ebdeb8ea8305bd8ac'"
+                )
+            )
+
             # Seed WorkspaceSettings singleton if absent
             ws_res = await session.execute(select(WorkspaceSettings).where(WorkspaceSettings.id == "default"))
             ws = ws_res.scalars().first()
@@ -735,13 +755,23 @@ async def init_db(engine: AsyncEngine) -> None:
 
 
 _engine: AsyncEngine | None = None
+_engine_url: str | None = None
 _factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_engine() -> AsyncEngine:
-    global _engine, _factory
+    global _engine, _engine_url, _factory
+    target_url = get_settings().sqlite_url
+    if _engine is not None and _engine_url != target_url:
+        try:
+            _engine.sync_engine.dispose()
+        except Exception:
+            pass
+        _engine = None
+        _factory = None
     if _engine is None:
-        _engine = create_engine()
+        _engine = create_engine(target_url)
+        _engine_url = target_url
         _factory = create_session_factory(_engine)
     return _engine
 
@@ -750,6 +780,42 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     get_engine()
     assert _factory is not None
     return _factory
+
+
+async def close_engine() -> None:
+    """Flush WAL checkpoint to TRUNCATE, dispose SQLAlchemy engine, and reset singletons."""
+    global _engine, _engine_url, _factory
+    if _engine is not None:
+        try:
+            async with _engine.begin() as conn:
+                await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+        except Exception:
+            pass
+        try:
+            await _engine.dispose()
+        except Exception:
+            pass
+        _engine = None
+        _engine_url = None
+        _factory = None
+
+
+async def vacuum_sqlite_db(engine: AsyncEngine) -> None:
+    """Execute VACUUM and PRAGMA wal_checkpoint(TRUNCATE) outside of any transaction with autocommit.
+
+    Handles both AsyncEngine and sync Engine. Outside transactions prevents
+    sqlite3.OperationalError: cannot VACUUM from within a transaction.
+    """
+    if hasattr(engine, "sync_engine"):
+        async with engine.connect() as conn:
+            autocommit_conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await autocommit_conn.execute(text("VACUUM"))
+            await autocommit_conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+    else:
+        with engine.connect() as conn:
+            autocommit_conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+            autocommit_conn.execute(text("VACUUM"))
+            autocommit_conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

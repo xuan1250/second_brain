@@ -27,7 +27,9 @@ from src.ingestion.indexer import (
     DeterministicStubEmbedder,
     HybridIndexer,
     LocalBgeM3Embedder,
+    _resolve_hf_hub_cache,
     check_collection_sparse_mode_compatibility,
+    create_embedder,
     release_cuda_cache,
     resolve_compute_device,
     resolve_sparse_mode,
@@ -78,6 +80,55 @@ def test_resolve_sparse_mode() -> None:
     assert resolve_sparse_mode("bge_m3", resolved_device="cuda", provider="local") == "bge_m3"
     assert resolve_sparse_mode("bge_m3", resolved_device="cpu", provider="local") == "bge_m3"
     assert resolve_sparse_mode("bm25", resolved_device="cuda", provider="local") == "bm25"
+
+
+def test_resolve_hf_hub_cache_explicit_paths(tmp_path: Path) -> None:
+    # Path named huggingface should automatically append hub
+    hf_path = tmp_path / "models" / "huggingface"
+    assert _resolve_hf_hub_cache(hf_path) == str(hf_path / "hub")
+
+    # Path already named hub should be preserved as-is
+    hub_path = tmp_path / "models" / "huggingface" / "hub"
+    assert _resolve_hf_hub_cache(hub_path) == str(hub_path)
+
+    # Path with existing hub subdirectory should resolve to hub
+    custom_dir = tmp_path / "custom_cache"
+    (custom_dir / "hub").mkdir(parents=True)
+    assert _resolve_hf_hub_cache(custom_dir) == str(custom_dir / "hub")
+
+    # Path without hub directory and not named huggingface preserved as-is
+    plain_dir = tmp_path / "plain_dir"
+    plain_dir.mkdir(parents=True)
+    assert _resolve_hf_hub_cache(plain_dir) == str(plain_dir)
+
+
+def test_resolve_hf_hub_cache_env_vars(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.delenv("HF_HOME", raising=False)
+
+    # Neither set
+    assert _resolve_hf_hub_cache(None) is None
+
+    # HF_HUB_CACHE takes precedence
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub_cache"))
+    assert _resolve_hf_hub_cache(None) == str(tmp_path / "hub_cache")
+
+    # HF_HOME when HF_HUB_CACHE is not set
+    monkeypatch.delenv("HF_HUB_CACHE")
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "huggingface"))
+    assert _resolve_hf_hub_cache(None) == str(tmp_path / "huggingface" / "hub")
+
+    # HF_HOME already ending in hub
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "huggingface" / "hub"))
+    assert _resolve_hf_hub_cache(None) == str(tmp_path / "huggingface" / "hub")
+
+
+def test_create_embedder_default_cache_dir(tmp_path: Path) -> None:
+    embedder = create_embedder(data_dir=tmp_path)
+    assert isinstance(embedder, LocalBgeM3Embedder)
+    expected_cache = tmp_path / "models" / "huggingface" / "hub"
+    assert embedder.cache_dir == expected_cache
+    assert expected_cache.exists()
 
 
 # ==============================================================================

@@ -186,7 +186,7 @@ def test_parse_xlsx_windowed_headers_and_schema(tmp_path: Path, sample_xlsx: Pat
     # XLSX chunks must have empty list for page_numbers
     for c in chunks:
         assert c.page_numbers == []
-        assert c.contextualized_text.startswith("budget_2026.xlsx > ")
+        assert "budget_2026.xlsx > " in c.contextualized_text
     table_chunks = [c for c in chunks if "Rows " in c.heading_path]
     assert len(table_chunks) >= 3
     for tc in table_chunks:
@@ -222,7 +222,9 @@ def test_parent_child_hierarchy_and_breadcrumb_injection(tmp_path: Path, sample_
 
     assert len(chunks) >= 2
     for c in chunks:
-        expected_prefix = format_contextualized_text(sample_docx.name, c.heading_path, c.child_text)
+        expected_prefix = format_contextualized_text(
+            sample_docx.name, c.heading_path, c.child_text, contextual_prefix=c.contextual_prefix
+        )
         assert c.contextualized_text == expected_prefix
         assert c.page_numbers == []  # DOCX has no page numbers
         assert c.child_text in c.parent_content

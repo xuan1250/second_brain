@@ -1,4 +1,6 @@
 data/
+data_prod_stash/
+data/db/.backup/
 .env
 **/.env
 !.env.example

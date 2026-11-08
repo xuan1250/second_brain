@@ -18,7 +18,7 @@ from sqlalchemy import select
 from src.config import LLMConfig, Settings, get_settings
 from src.db.models import ChatThread, Document
 from src.db.qdrant import DENSE, SPARSE
-from src.db.session import create_engine, create_session_factory, init_db
+from src.db.session import close_engine, create_engine, create_session_factory, init_db, vacuum_sqlite_db
 from src.ingestion.chunker import ChunkPayload
 from src.ingestion.indexer import (
     DeterministicBM25Encoder,
@@ -35,6 +35,7 @@ from src.rag.grader import (
 )
 from src.rag.graph import (
     close_checkpointer,
+    compact_chat_history_db,
     delete_thread_state,
     get_checkpointer,
     get_thread_state,
@@ -69,6 +70,18 @@ class CountingFakeChatModel(GenericFakeChatModel):
 
 
 @pytest.fixture(autouse=True)
+def isolate_test_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Ensure every test in test_rag_graph gets isolated DATA_DIR and DB_DIR even with --noconftest."""
+    data_dir = tmp_path / "data"
+    db_dir = tmp_path / "data" / "db"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("DB_DIR", str(db_dir))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 async def reset_rag_singletons():
     """Ensure all RAG singletons are clean before and after each test."""
     set_chat_model(None)
@@ -77,6 +90,7 @@ async def reset_rag_singletons():
     set_reranker(None)
     set_active_qdrant_client(None)
     await close_checkpointer()
+    await close_engine()
     yield
     set_chat_model(None)
     set_embedder(None)
@@ -84,6 +98,7 @@ async def reset_rag_singletons():
     set_reranker(None)
     set_active_qdrant_client(None)
     await close_checkpointer()
+    await close_engine()
 
 
 @pytest.fixture
@@ -804,3 +819,254 @@ async def test_multi_turn_citations_persistence_and_fallback(
     assert serialized[1].citations[0].source_filename == "q3_report.pdf"
     assert serialized[3].role == "assistant"
     assert serialized[3].citations == []
+
+
+@pytest.mark.asyncio
+async def test_compact_chat_history_db_pruning_and_blob_slimming(tmp_path: Path):
+    """Verify compact_chat_history_db prunes intermediate checkpoints and compacts chunk blobs."""
+    import aiosqlite
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    db_file = tmp_path / "test_chat.db"
+    conn = await aiosqlite.connect(str(db_file))
+    saver = AsyncSqliteSaver(conn)
+    await saver.setup()
+
+    # Seed 3 checkpoints for thread-1 and 2 for thread-2
+    # thread-1: chk-1, chk-2, chk-3 (latest)
+    # thread-2: chk-a, chk-b (latest)
+    dummy_chunks = [{"child_text": "sample text", "score": 0.95}]
+    for t_id, chk_ids in [("thread-1", ["chk-1", "chk-2", "chk-3"]), ("thread-2", ["chk-a", "chk-b"])]:
+        for c_id in chk_ids:
+            chk_data = {
+                "v": 1,
+                "ts": "2026-11-08T12:00:00Z",
+                "id": c_id,
+                "channel_values": {
+                    "messages": [HumanMessage(content=f"Hello {t_id}")],
+                    "citations": [{"source_filename": "doc.pdf", "citation_index": 1}],
+                    "retrieved_chunks": dummy_chunks,
+                    "reranked_chunks": dummy_chunks,
+                    "graded_chunks": dummy_chunks,
+                },
+                "channel_versions": {},
+                "versions_seen": {},
+                "updated_channels": [],
+            }
+            chk_type, blob = saver.serde.dumps_typed(chk_data)
+            await conn.execute(
+                "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, type, checkpoint) VALUES (?, '', ?, ?, ?)",
+                (t_id, c_id, chk_type, blob),
+            )
+            # Add a write record for each
+            await conn.execute(
+                "INSERT INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, task_path, idx, channel, type, value) VALUES (?, '', ?, 'task1', '', 0, 'channel', ?, ?)",
+                (t_id, c_id, chk_type, blob),
+            )
+    await conn.commit()
+
+    # Step 1: Compact only thread-1
+    res1 = await compact_chat_history_db(thread_id="thread-1", run_vacuum=False, checkpointer=saver)
+    assert res1["superseded_checkpoints_deleted"] == 2  # chk-1 and chk-2 deleted
+    assert res1["writes_deleted"] == 2
+    assert res1["blobs_compacted"] == 1  # chk-3 compacted
+
+    # Verify thread-1 only has chk-3 remaining
+    async with conn.execute("SELECT checkpoint_id FROM checkpoints WHERE thread_id = 'thread-1'") as cur:
+        rows = await cur.fetchall()
+        assert [r[0] for r in rows] == ["chk-3"]
+
+    # Verify thread-2 still has 2 checkpoints untouched
+    async with conn.execute("SELECT checkpoint_id FROM checkpoints WHERE thread_id = 'thread-2'") as cur:
+        rows = await cur.fetchall()
+        assert len(rows) == 2
+
+    # Step 2: Compact all threads with run_vacuum=True
+    res2 = await compact_chat_history_db(thread_id=None, run_vacuum=True, checkpointer=saver)
+    assert res2["superseded_checkpoints_deleted"] == 1  # chk-a deleted from thread-2
+    assert res2["writes_deleted"] == 1
+    assert res2["blobs_compacted"] == 1  # chk-b compacted
+
+    # Verify all remaining checkpoints have empty chunk lists but preserved messages/citations
+    for t_id, expected_id in [("thread-1", "chk-3"), ("thread-2", "chk-b")]:
+        async with conn.execute(
+            "SELECT type, checkpoint FROM checkpoints WHERE thread_id = ? AND checkpoint_id = ?",
+            (t_id, expected_id),
+        ) as cur:
+            row = await cur.fetchone()
+            data = saver.serde.loads_typed((row[0], row[1]))
+            cv = data["channel_values"]
+            assert cv["retrieved_chunks"] == []
+            assert cv["reranked_chunks"] == []
+            assert cv["graded_chunks"] == []
+            assert len(cv["messages"]) == 1
+            assert len(cv["citations"]) == 1
+
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_chat_history_db_with_memory_saver():
+    """Verify compact_chat_history_db safely no-ops when checkpointer is not AsyncSqliteSaver."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    mem_saver = MemorySaver()
+    res = await compact_chat_history_db(thread_id="thread-123", run_vacuum=True, checkpointer=mem_saver)
+    assert res == {
+        "superseded_checkpoints_deleted": 0,
+        "writes_deleted": 0,
+        "blobs_compacted": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_vacuum_sqlite_db(tmp_path: Path):
+    """Verify vacuum_sqlite_db runs VACUUM and WAL checkpoint truncation without transaction error."""
+    db_file = tmp_path / "test_vacuum.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_file}")
+    await init_db(engine)
+
+    # Must execute cleanly without 'cannot VACUUM from within a transaction' error
+    await vacuum_sqlite_db(engine)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_init_db_slims_legacy_chunks_and_removes_orphan(tmp_path: Path):
+    """Verify init_db() idempotently slims legacy document_chunks text and deletes orphaned thread."""
+    from src.db.models import DocumentChunk
+    from sqlalchemy import text
+
+    db_file = tmp_path / "test_legacy_slim.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_file}")
+    await init_db(engine)
+    session_factory = create_session_factory(engine)
+
+    # Insert a legacy document, chunk with text/parent_content, and the orphaned ChatThread
+    async with session_factory() as session:
+        async with session.begin():
+            doc = Document(
+                id="doc-legacy-1",
+                filename="legacy.pdf",
+                file_type="pdf",
+                sha256="abc123hash",
+                size_bytes=1024,
+                status="ready",
+            )
+            session.add(doc)
+            chunk = DocumentChunk(
+                id="chunk-legacy-1",
+                doc_id="doc-legacy-1",
+                point_id="00000000-0000-0000-0000-000000000001",
+                chunk_index=0,
+                token_count=50,
+                text="This is legacy chunk text that takes storage",
+                parent_content="This is legacy parent content that takes massive storage",
+            )
+            session.add(chunk)
+            orphan_thread = ChatThread(
+                thread_id="1de1cd57414b458ebdeb8ea8305bd8ac",
+                title="Orphan thread with zero checkpoints",
+            )
+            session.add(orphan_thread)
+
+    # Re-run init_db (simulating startup migration)
+    await init_db(engine)
+
+    # Verify chunk was slimmed and orphan was deleted
+    async with session_factory() as session:
+        c_row = await session.get(DocumentChunk, "chunk-legacy-1")
+        assert c_row is not None
+        assert c_row.text == ""
+        assert c_row.parent_content == ""
+
+        t_row = await session.get(ChatThread, "1de1cd57414b458ebdeb8ea8305bd8ac")
+        assert t_row is None
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_indexer_slims_chunks_in_sqlite_but_preserves_qdrant(tmp_path: Path):
+    """Verify HybridIndexer.index_chunks writes empty text to SQLite while preserving Qdrant payload."""
+    from src.db.models import DocumentChunk
+
+    qdrant = AsyncQdrantClient(location=":memory:")
+    collection = "test_indexer_slim"
+    await qdrant.create_collection(
+        collection_name=collection,
+        vectors_config={
+            DENSE: models.VectorParams(size=STUB_DIM, distance=models.Distance.COSINE),
+        },
+        sparse_vectors_config={
+            SPARSE: models.SparseVectorParams(),
+        },
+    )
+
+    db_file = tmp_path / "test_indexer_db.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_file}")
+    await init_db(engine)
+    session_factory = create_session_factory(engine)
+
+    # Create document
+    async with session_factory() as session:
+        async with session.begin():
+            doc = Document(
+                id="doc-indexer-1",
+                filename="indexer_test.pdf",
+                file_type="pdf",
+                sha256="indexertest123",
+                size_bytes=2048,
+                status="parsing",
+            )
+            session.add(doc)
+
+    indexer = HybridIndexer(
+        collection=collection,
+        qdrant=qdrant,
+        embedder=DeterministicStubEmbedder(dimensions=STUB_DIM),
+        sparse_encoder=DeterministicBM25Encoder(),
+    )
+
+    chunk = ChunkPayload(
+        chunk_id="11111111-2222-3333-4444-555555555555",
+        parent_id="parent-1",
+        source_filename="indexer_test.pdf",
+        file_type="pdf",
+        heading_path="Introduction",
+        page_numbers=[1],
+        token_count=42,
+        child_text="Crucial child chunk text content",
+        parent_content="Comprehensive parent context section content",
+        chunk_index=0,
+    )
+
+    async with session_factory() as session:
+        indexed_count = await indexer.index_chunks(
+            session=session,
+            doc_id="doc-indexer-1",
+            chunks=[chunk],
+        )
+        await session.commit()
+    assert indexed_count == 1
+
+    # Verify SQLite row has empty strings
+    async with session_factory() as session:
+        c_row = await session.get(DocumentChunk, "11111111-2222-3333-4444-555555555555")
+        assert c_row is not None
+        assert c_row.text == ""
+        assert c_row.parent_content == ""
+
+    # Verify Qdrant payload has child_text and parent_content
+    points = await qdrant.retrieve(
+        collection_name=collection,
+        ids=["11111111-2222-3333-4444-555555555555"],
+        with_payload=True,
+    )
+    assert len(points) == 1
+    payload = points[0].payload
+    assert payload["child_text"] == "Crucial child chunk text content"
+    assert payload["parent_content"] == "Comprehensive parent context section content"
+
+    await engine.dispose()
+    await qdrant.close()

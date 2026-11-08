@@ -1,6 +1,7 @@
 """System health check, Qdrant/SQLite statistics, memory telemetry, and read-only provider configuration routes."""
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import APIRouter, Depends
@@ -23,6 +24,8 @@ from src.ingestion.indexer import release_cuda_cache, resolve_compute_device, re
 from src.ingestion.classifier import is_classifier_resident, get_classifier_model_name
 from src.ingestion.worker import IngestionOrchestrator
 from src.rag.llm import _load_dotenv_if_present, is_valid_api_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -238,18 +241,30 @@ async def system_memory_reclaim(
     """Explicit on-demand memory reclamation: shut down idle worker pool and flush CUDA cache."""
     reclaimed = orchestrator.reclaim_worker_pool(wait=False, force=False)
     worker_state = orchestrator.get_worker_state()
+    active_worker_jobs = worker_state.get("active_worker_jobs", 0)
     active_indexing_jobs = worker_state.get("active_indexing_jobs", 0)
     if active_indexing_jobs == 0:
         cuda_cleared = release_cuda_cache()
     else:
         cuda_cleared = False
+
+    if active_worker_jobs == 0 and active_indexing_jobs == 0:
+        try:
+            from src.rag.graph import compact_chat_history_db
+            from src.db.session import get_engine, vacuum_sqlite_db
+
+            await compact_chat_history_db(run_vacuum=True)
+            await vacuum_sqlite_db(get_engine())
+        except Exception as exc:
+            logger.warning("Failed to compact/vacuum SQLite during memory reclaim: %s", exc)
+
     stats = collect_memory_stats(orchestrator, settings)
     return MemoryReclaimResponse(
         status="ok",
         worker_pool_reclaimed=reclaimed,
         deferred=worker_state.get("reclaim_deferred", False),
         cuda_cache_cleared=cuda_cleared,
-        active_worker_jobs=worker_state.get("active_worker_jobs", 0),
+        active_worker_jobs=active_worker_jobs,
         memory=stats,
     )
 

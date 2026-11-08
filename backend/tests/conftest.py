@@ -19,7 +19,7 @@ from qdrant_client import AsyncQdrantClient
 
 from src.api.main import create_app
 from src.config import get_settings
-from src.db.session import create_engine, create_session_factory, init_db
+from src.db.session import close_engine, create_engine, create_session_factory, init_db
 from src.ingestion.indexer import (
     DeterministicBM25Encoder,
     DeterministicStubEmbedder,
@@ -32,6 +32,18 @@ from src.rag.reranker import FlashRankReranker, set_reranker
 from src.rag.retriever import set_active_qdrant_client
 
 E2E_STUB_DIMENSIONS = 1024
+
+
+@pytest.fixture(autouse=True)
+def isolate_test_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Ensure every test gets isolated DATA_DIR and DB_DIR by default."""
+    data_dir = tmp_path / "data"
+    db_dir = tmp_path / "data" / "db"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("DB_DIR", str(db_dir))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 class DeterministicStubRanker:

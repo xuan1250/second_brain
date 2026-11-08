@@ -81,6 +81,34 @@ def resolve_sparse_mode(sparse_mode: str = "auto", resolved_device: str = "cpu",
     return "bm25"
 
 
+def _resolve_hf_hub_cache(cache_dir: Path | str | None) -> str | None:
+    """Resolve and normalize a Hugging Face cache directory to point to its 'hub' subdirectory.
+
+    Prevents cache fragmentation where passing a root huggingface directory
+    causes models to be downloaded into both root and 'hub/' subdirectories.
+    """
+    if cache_dir is not None:
+        p = Path(cache_dir)
+        if p.name == "hub":
+            return str(p)
+        if p.name == "huggingface" or (p / "hub").exists():
+            return str(p / "hub")
+        return str(p)
+
+    hf_hub_cache = os.environ.get("HF_HUB_CACHE")
+    if hf_hub_cache:
+        return hf_hub_cache
+
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        p = Path(hf_home)
+        if p.name == "hub":
+            return str(p)
+        return str(p / "hub")
+
+    return None
+
+
 class BaseEmbedder(ABC):
     """Abstract dense embedder interface shared by ingestion and Phase 3 retrieval."""
 
@@ -161,7 +189,7 @@ class LocalBgeM3Embedder(BaseEmbedder):
             import torch
             from sentence_transformers import SentenceTransformer
 
-            cache_folder = str(self.cache_dir) if self.cache_dir else os.environ.get("HF_HOME")
+            cache_folder = _resolve_hf_hub_cache(self.cache_dir)
             use_fp16 = self.resolved_device == "cuda" and self.fp16
             model_kwargs: dict[str, Any] = {}
             if use_fp16:
@@ -187,7 +215,7 @@ class LocalBgeM3Embedder(BaseEmbedder):
                 import torch.nn as nn
                 from huggingface_hub import hf_hub_download
 
-                cache_folder = str(self.cache_dir) if self.cache_dir else os.environ.get("HF_HOME")
+                cache_folder = _resolve_hf_hub_cache(self.cache_dir)
                 weight_path = hf_hub_download(
                     repo_id=self.model_name,
                     filename="sparse_linear.pt",
@@ -478,7 +506,7 @@ def create_embedder(config: EmbeddingConfig | None = None, data_dir: Path | None
             base_url=settings.llm.base_url,
         )
     # Default: local BAAI/bge-m3
-    hf_cache = resolved_data / "models" / "huggingface"
+    hf_cache = resolved_data / "models" / "huggingface" / "hub"
     hf_cache.mkdir(parents=True, exist_ok=True)
     return LocalBgeM3Embedder(
         model_name=cfg.model_name or "BAAI/bge-m3",
@@ -688,8 +716,8 @@ class HybridIndexer:
                             heading_path=chunk.heading_path,
                             page_numbers=page_str,
                             token_count=chunk.token_count,
-                            text=chunk.child_text,
-                            parent_content=chunk.parent_content,
+                            text="",
+                            parent_content="",
                             domain_key=chunk.domain_key or "general",
                             subdomain_key=chunk.subdomain_key or "general",
                             epistemic_modality=chunk.epistemic_modality or "general",

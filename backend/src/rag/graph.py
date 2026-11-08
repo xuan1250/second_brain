@@ -45,6 +45,7 @@ __all__ = [
     "QueryRewriteResult",
     "build_rag_graph",
     "close_checkpointer",
+    "compact_chat_history_db",
     "get_checkpointer",
     "get_thread_state",
     "delete_thread_state",
@@ -548,7 +549,11 @@ def build_rag_graph(
         original_query = str(state.get("original_query") or "")
         candidates = list(state.get("retrieved_chunks") or [])
         if not candidates:
-            return {"reranked_chunks": [], "steps": list(state.get("steps") or [])}
+            return {
+                "retrieved_chunks": [],
+                "reranked_chunks": [],
+                "steps": list(state.get("steps") or []),
+            }
         reranked = await active_reranker.rerank(
             query=original_query,
             candidates=candidates,
@@ -561,6 +566,7 @@ def build_rag_graph(
         }
         steps = list(state.get("steps") or []) + [step_record]
         return {
+            "retrieved_chunks": [],
             "reranked_chunks": reranked,
             "steps": steps,
         }
@@ -569,7 +575,11 @@ def build_rag_graph(
         original_query = str(state.get("original_query") or "")
         reranked = list(state.get("reranked_chunks") or [])
         if not reranked:
-            return {"graded_chunks": [], "steps": list(state.get("steps") or [])}
+            return {
+                "reranked_chunks": [],
+                "graded_chunks": [],
+                "steps": list(state.get("steps") or []),
+            }
         active_grader = grader or ContextGrader(
             llm=llm,
             provider_override=provider_override,
@@ -584,6 +594,7 @@ def build_rag_graph(
         }
         steps = list(state.get("steps") or []) + [step_record]
         return {
+            "reranked_chunks": [],
             "graded_chunks": graded,
             "steps": steps,
         }
@@ -717,6 +728,9 @@ def build_rag_graph(
                     },
                 )
             ],
+            "retrieved_chunks": [],
+            "reranked_chunks": [],
+            "graded_chunks": [],
             "citations": citations,
             "steps": steps,
         }
@@ -748,6 +762,9 @@ def build_rag_graph(
                     },
                 )
             ],
+            "retrieved_chunks": [],
+            "reranked_chunks": [],
+            "graded_chunks": [],
             "citations": [],
             "steps": steps,
         }
@@ -831,12 +848,160 @@ async def close_checkpointer() -> None:
     global _checkpointer_singleton, _checkpointer_conn, _checkpointer_db_path
     if _checkpointer_conn is not None:
         try:
+            await _checkpointer_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
+        try:
             await _checkpointer_conn.close()
         except Exception:
             pass
     _checkpointer_conn = None
     _checkpointer_singleton = None
     _checkpointer_db_path = None
+
+
+async def compact_chat_history_db(
+    thread_id: str | None = None,
+    run_vacuum: bool = False,
+    checkpointer: BaseCheckpointSaver | None = None,
+) -> dict[str, int]:
+    """Prune superseded intermediate checkpoints and clear transient chunk blobs.
+
+    Args:
+        thread_id: Optional specific thread_id to compact. If None, compacts all threads.
+        run_vacuum: If True, executes VACUUM and PRAGMA wal_checkpoint(TRUNCATE).
+        checkpointer: Active checkpointer instance. If provided and not AsyncSqliteSaver,
+                      returns early without touching disk (e.g. for MemorySaver in tests).
+
+    Returns:
+        Dict with count of deleted checkpoints, deleted writes, and compacted blobs.
+    """
+    if checkpointer is not None and not isinstance(checkpointer, AsyncSqliteSaver):
+        return {
+            "superseded_checkpoints_deleted": 0,
+            "writes_deleted": 0,
+            "blobs_compacted": 0,
+        }
+
+    saver = checkpointer if isinstance(checkpointer, AsyncSqliteSaver) else await get_checkpointer()
+    if not isinstance(saver, AsyncSqliteSaver):
+        return {
+            "superseded_checkpoints_deleted": 0,
+            "writes_deleted": 0,
+            "blobs_compacted": 0,
+        }
+
+    conn: aiosqlite.Connection = saver.conn
+    superseded_checkpoints_deleted = 0
+    writes_deleted = 0
+    blobs_compacted = 0
+
+    async with saver.lock:
+        if thread_id:
+            chk_del_sql = """
+                DELETE FROM checkpoints
+                WHERE thread_id = ?
+                  AND checkpoint_id != (
+                      SELECT MAX(c2.checkpoint_id)
+                      FROM checkpoints c2
+                      WHERE c2.thread_id = checkpoints.thread_id
+                        AND c2.checkpoint_ns = checkpoints.checkpoint_ns
+                  )
+            """
+            cursor = await conn.execute(chk_del_sql, (thread_id,))
+            superseded_checkpoints_deleted = cursor.rowcount if cursor.rowcount != -1 else 0
+
+            writes_del_sql = """
+                DELETE FROM writes
+                WHERE thread_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM checkpoints c
+                      WHERE c.thread_id = writes.thread_id
+                        AND c.checkpoint_ns = writes.checkpoint_ns
+                        AND c.checkpoint_id = writes.checkpoint_id
+                  )
+            """
+            cursor = await conn.execute(writes_del_sql, (thread_id,))
+            writes_deleted = cursor.rowcount if cursor.rowcount != -1 else 0
+
+            select_sql = (
+                "SELECT thread_id, checkpoint_ns, checkpoint_id, type, checkpoint "
+                "FROM checkpoints WHERE thread_id = ?"
+            )
+            params = (thread_id,)
+        else:
+            chk_del_sql = """
+                DELETE FROM checkpoints
+                WHERE checkpoint_id != (
+                    SELECT MAX(c2.checkpoint_id)
+                    FROM checkpoints c2
+                    WHERE c2.thread_id = checkpoints.thread_id
+                      AND c2.checkpoint_ns = checkpoints.checkpoint_ns
+                )
+            """
+            cursor = await conn.execute(chk_del_sql)
+            superseded_checkpoints_deleted = cursor.rowcount if cursor.rowcount != -1 else 0
+
+            writes_del_sql = """
+                DELETE FROM writes
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM checkpoints c
+                    WHERE c.thread_id = writes.thread_id
+                      AND c.checkpoint_ns = writes.checkpoint_ns
+                      AND c.checkpoint_id = writes.checkpoint_id
+                )
+            """
+            cursor = await conn.execute(writes_del_sql)
+            writes_deleted = cursor.rowcount if cursor.rowcount != -1 else 0
+
+            select_sql = (
+                "SELECT thread_id, checkpoint_ns, checkpoint_id, type, checkpoint "
+                "FROM checkpoints"
+            )
+            params = ()
+
+        async with conn.execute(select_sql, params) as cur:
+            rows = await cur.fetchall()
+
+        for t_id, ns, c_id, chk_type, blob in rows:
+            if not blob:
+                continue
+            try:
+                data = saver.serde.loads_typed((chk_type, blob))
+                if isinstance(data, dict) and "channel_values" in data:
+                    cv = data["channel_values"]
+                    modified = False
+                    for k in ("retrieved_chunks", "reranked_chunks", "graded_chunks"):
+                        if k in cv and cv[k]:
+                            cv[k] = []
+                            modified = True
+                    if modified:
+                        new_type, new_blob = saver.serde.dumps_typed(data)
+                        await conn.execute(
+                            "UPDATE checkpoints SET type = ?, checkpoint = ? "
+                            "WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?",
+                            (new_type, new_blob, t_id, ns, c_id),
+                        )
+                        blobs_compacted += 1
+            except Exception as err:
+                logger.warning(
+                    "[CRAG] Failed to compact checkpoint blob for thread=%s id=%s: %s",
+                    t_id,
+                    c_id,
+                    err,
+                )
+
+        await conn.commit()
+
+        if run_vacuum:
+            await conn.execute("VACUUM")
+            await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    return {
+        "superseded_checkpoints_deleted": max(0, superseded_checkpoints_deleted),
+        "writes_deleted": max(0, writes_deleted),
+        "blobs_compacted": blobs_compacted,
+    }
 
 
 async def upsert_chat_thread(
@@ -1119,6 +1284,19 @@ async def stream_chat_response(
             user_message=clean_query,
             session_factory=session_factory,
         )
+
+        try:
+            await compact_chat_history_db(
+                thread_id=active_thread_id,
+                run_vacuum=False,
+                checkpointer=saver,
+            )
+        except Exception as comp_err:
+            logger.warning(
+                "[CRAG] Checkpointer compaction failed for thread %s: %s",
+                active_thread_id,
+                comp_err,
+            )
 
         logger.info(
             "[CRAG] Workflow complete: thread_id=%s, provider=%s, model=%s",
