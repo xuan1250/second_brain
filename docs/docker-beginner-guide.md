@@ -673,7 +673,9 @@ Click the **`⚙️ Settings`** button in the top application bar to open the un
 2. **Tab 2 — Polysemy Lexicon**:
    - Browse, search, add, and delete domain-specific definitions and contrastive warnings for polysemic terms (terms whose meaning shifts across disciplines, such as *"consideration"* in Law vs. General, or *"yield"* in Engineering vs. Finance).
 3. **Tab 3 — Ingestion & AI Defaults**:
-   - Configure workspace-wide defaults for **Parsing & Ingestion Engine** (`Auto`, `GPU / Deep Vision`, `Fast Path`), **Human-in-the-Loop Approval Gate** (`Review All`, `Auto-Approve High Conf`, `Auto-Approve All`), **Auto-Approve Confidence Threshold** ($50\%\text{–}99\%$), and **Default LLM Provider & Model**. Saving immediately updates the Upload Dropzone and Chat Assistant in real time without restarting Docker.
+   - **Ingestion & Approval Engine**: Configure workspace-wide defaults for **Parsing Engine** (`Auto`, `GPU / Deep Vision`, `Fast Path`), **Approval Gate** (`Review All`, `Auto-Approve High Conf`, `Auto-Approve All`), and **Confidence Threshold** ($50\%\text{–}99\%$).
+   - **API Keys & Live Provider Verification**: Manage and mask API keys for OpenAI, Anthropic, DeepSeek, and OpenAI-Compatible endpoints directly from the UI. Features password reveal toggles, custom Base URL for OpenAI-compatible/vLLM/Ollama proxies, 1-click **"Verify & Save"** with instant 5-second live provider ping, source badges (`UI Key` vs `.env`), and a **"Clear UI Key"** button to revert to `backend/.env`.
+   - **Proactive Warnings**: Proactive alert banners immediately highlight missing or invalid keys across Settings Tab 3, the Chat Composer, and the Header Settings button with a 1-click fix link. Saving updates the workspace in real time without restarting Docker.
 
 ---
 
@@ -821,18 +823,18 @@ rm -rf data/db/* data/raw/* data/parsed/* data/markdown/*
 
 ### Q3: Missing or Invalid API Key errors
 
-**Symptom**: `401 Unauthorized` or `Error: No LLM model_name configured for provider`.  
-**Cause**: `backend/.env` is missing or contains placeholder values like `your-openai-api-key`.  
-**Solution**:
-1. Check `backend/.env` with your text editor.
-2. Ensure your real key is present without quotation marks:
-   ```env
-   OPENAI_API_KEY=sk-proj-abc123xyz456...
-   ```
-3. Restart the service:
-   ```bash
-   docker compose restart second-brain
-   ```
+**Symptom**: Amber warning banner above Chat Composer (`"No valid API key configured"`), rose banner (`"Invalid API key"`), or an amber/rose indicator dot on the Header `⚙️ Settings` button.  
+**Cause**: Neither `backend/.env` nor Workspace Settings has a valid API key configured for the selected LLM provider, or the provider returned 401 Unauthorized during live verification.  
+**Solution (Method 1 — Recommended: UI 1-Click Fix)**:
+1. Click **"Configure API Key →"** directly on the warning banner (or click `⚙️ Settings` and navigate to Tab 3: *Ingestion & AI Defaults*).
+2. Enter your real key in the provider's input field.
+3. Click **"Verify & Save"**; the system pings the provider within 5 seconds and updates the status to `✓ Verified`.
+4. Return to chat immediately—no container restarts required!
+
+**Solution (Method 2 — Environment File)**:
+1. Open `backend/.env` on the host with your text editor.
+2. Add your real key without quotation marks (e.g. `OPENAI_API_KEY=sk-proj-...`).
+3. Restart the service: `docker compose restart second-brain` (or clear the UI key in Settings so the `.env` value takes effect).
 
 ---
 

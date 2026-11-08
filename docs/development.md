@@ -66,7 +66,12 @@ Settings are loaded by [`src/config.py`](../backend/src/config.py) (`load_settin
 3. Environment variables.
 4. `config.yaml` — for the LLM, `llm.providers.<name>` supplies the default model/base URL when a non-default provider is selected.
 
-**Secrets** go in `backend/.env` (start from [`.env.example`](../backend/.env.example)); it is loaded by [`src/rag/llm.py`](../backend/src/rag/llm.py). Values that look like template placeholders (e.g. starting with `your-`) are treated as unset. Never commit real keys.
+**Secrets & LLM API Keys** go in `backend/.env` (start from [`.env.example`](../backend/.env.example)) or can be configured directly from the Web UI under **Workspace Settings → Ingestion & AI Defaults**. Values that look like template placeholders (e.g. starting with `your-` or containing control characters/whitespace) are rejected or treated as unset. Never commit real keys.
+
+**LLM Credential Resolution Precedence**:
+1. **UI-configured API Key** in SQLite `WorkspaceSettings` (`llm_api_keys`), configurable and verifiable via `SettingsModal.tsx`.
+2. **Environment variables** in `backend/.env` / `os.environ` (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, or `LLM_API_KEY` with fallback to `OPENAI_API_KEY`/`DEEPSEEK_API_KEY` for OpenAI-compatible endpoints).
+3. **None**: Proactive warning alerts appear on the Workspace Header, Settings Tab 3, and Chat Composer until a valid key is provided. Key verification can be tested live bounded by a 5-second ping via `POST /api/v1/settings/verify-key`. Clearing a UI key immediately restores fallback to `backend/.env`.
 
 **Environment variables read by the code**
 
