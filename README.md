@@ -52,6 +52,7 @@ The first ingestion downloads ~2 GB of embedding models into `./data/models`. Se
 | [docs/development.md](docs/development.md) | Running locally with `uv` + Vite, configuration and env vars, CLI batch ingestion, tests |
 | [docs/deployment.md](docs/deployment.md) | Docker topology, storage volumes, exposure model, backup/restore |
 | [docs/docker-beginner-guide.md](docs/docker-beginner-guide.md) | Step-by-step beginner guide: install software, prepare environment, and launch with Docker |
+| [docs/ai-onboarding-copilot.md](docs/ai-onboarding-copilot.md) | Uploadable prompt file for Claude, ChatGPT, or Gemini to guide users step-by-step interactively |
 | [docs/presentations/crag_workflow_explained.html](docs/presentations/crag_workflow_explained.html) | Interactive visual presentation of the 7-node CRAG engine, prompt flows, and 3-tier databases |
 | [docs/README.md](docs/README.md) | Full documentation index |
 

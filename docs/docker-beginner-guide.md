@@ -2,6 +2,10 @@
 
 Welcome! This comprehensive guide is designed for anyone—from complete beginners who have never touched Docker, Python, or Git, to experienced developers—to get **Second Brain** installed, configured, and running smoothly on your personal computer (Windows, macOS, or Linux).
 
+> [!TIP]
+> **Prefer an Interactive AI Co-Pilot?**  
+> If you'd rather have an AI (Claude, ChatGPT, or Gemini) guide you interactively one step at a time and wait for your confirmation before moving to the next step, upload or paste [`docs/ai-onboarding-copilot.md`](ai-onboarding-copilot.md) directly into your AI chat window!
+
 ---
 
 ## Table of Contents
