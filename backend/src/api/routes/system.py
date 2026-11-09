@@ -119,7 +119,6 @@ def collect_memory_stats(
     classifier_res = False
     classifier_mname = None
     try:
-        from src.ingestion.classifier import is_classifier_resident, get_classifier_model_name
         classifier_res = is_classifier_resident()
         classifier_mname = get_classifier_model_name()
     except Exception:

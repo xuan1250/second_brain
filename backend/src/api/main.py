@@ -30,12 +30,27 @@ from src.rag.reranker import get_reranker
 from src.rag import retriever as retriever_mod
 from src.rag.retriever import set_active_qdrant_client
 
-CORS_ORIGINS: list[str] = [
+DEFAULT_CORS_ORIGINS: list[str] = [
     "http://localhost:5173",
     "http://localhost:8000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8000",
 ]
+
+
+def resolve_cors_origins() -> list[str]:
+    """Resolve allowed CORS origins merging defaults with optional comma-separated CORS_ORIGINS env."""
+    origins = list(DEFAULT_CORS_ORIGINS)
+    extra = os.environ.get("CORS_ORIGINS")
+    if extra:
+        for origin in extra.split(","):
+            cleaned = origin.strip().rstrip("/")
+            if cleaned and cleaned not in origins:
+                origins.append(cleaned)
+    return origins
+
+
+CORS_ORIGINS: list[str] = resolve_cors_origins()
 
 
 def mount_frontend_if_present(app: FastAPI, dist_dir: Path) -> bool:

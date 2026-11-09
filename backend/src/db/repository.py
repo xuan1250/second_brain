@@ -5,7 +5,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from qdrant_client import AsyncQdrantClient, models
 from sqlalchemy import select, text
@@ -25,6 +25,14 @@ from src.db.models import (
     _uuid,
 )
 
+
+class DocumentCancellable(Protocol):
+    """Protocol for components that can cancel in-flight document processing."""
+
+    def cancel_document(self, doc_id: str) -> None:
+        ...
+
+
 if TYPE_CHECKING:
     from src.ingestion.worker import IngestionOrchestrator
 
@@ -40,7 +48,7 @@ async def delete_document_atomic(
     doc_id: str,
     data_dir: Path | None = None,
     collection: str | None = None,
-    orchestrator: IngestionOrchestrator | None = None,
+    orchestrator: DocumentCancellable | None = None,
 ) -> bool:
     """Delete a document across all tiers. Returns False if it does not exist.
 
