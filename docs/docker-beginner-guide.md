@@ -25,9 +25,9 @@ Welcome! This comprehensive guide is designed for anyone—from complete beginne
    - [Supported Cloud Providers (OpenAI, Anthropic, DeepSeek)](#supported-cloud-providers)
    - [Local Offline Models (Ollama, LM Studio, vLLM)](#local-offline-models)
 5. [Step 3: Download (Clone) the Repository](#step-3-download-clone-the-repository)
-6. [Step 4: Prepare the Configuration File (`.env`)](#step-4-prepare-the-configuration-file-env)
-   - [4.1 Copy the Template](#41-copy-the-template)
-   - [4.2 Configure Your API Keys](#42-configure-your-api-keys)
+6. [Step 4: 1-Second File Initialization (No Editing Needed)](#step-4-1-second-file-initialization-no-editing-needed)
+   - [4.1 Run the 1-Line Copy Command](#41-run-the-1-line-copy-command)
+   - [4.2 (Optional for Advanced Users) Pre-Configuring via .env](#42-optional-for-advanced-users-pre-configuring-via-env)
    - [4.3 File Permissions (Linux Only)](#43-file-permissions-linux-only)
 7. [Step 5: Run the App with Docker Compose](#step-5-run-the-app-with-docker-compose)
    - [Mode A: CPU Mode (Default & Simplest)](#mode-a-cpu-mode-default--simplest)
@@ -331,14 +331,18 @@ Open your terminal or PowerShell and run:
 
 ---
 
-## Step 4: Prepare the Configuration File (`.env`)
+## Step 4: 1-Second File Initialization (No Editing Needed)
 
-Inside `second-brain/backend/`, there is a template file named `.env.example`. You must copy it to `backend/.env` before launching Docker.
+To ensure Docker mounts properly, run a single copy command in your terminal to create the container's environment file.
 
-> [!CAUTION]
-> **Mandatory File Pre-Creation**: You **must** copy `.env.example` to `.env` before running `docker compose up`. If you launch Docker while `backend/.env` is missing, Docker Engine will automatically create a **directory** named `backend/.env` on your host machine to satisfy the volume mount, which immediately crashes the container on startup with `ExitCode 127: not a directory`.
+> [!NOTE]
+> **No File Editing Required for Newbies!**  
+> You do **not** need to open, read, or edit this file. Keep all the default placeholder values as they are!  
+> You will configure your AI API key visually inside the web browser in [Step 7.9](#793-tab-3--ingestion--ai-defaults) using the 1-click live verification manager.
 
-### 4.1 Copy the Template
+### 4.1 Run the 1-Line Copy Command
+
+In your terminal (inside the `second-brain` folder), run:
 
 - **Windows PowerShell**:
   ```powershell
@@ -349,23 +353,17 @@ Inside `second-brain/backend/`, there is a template file named `.env.example`. Y
   cp backend/.env.example backend/.env
   ```
 
+> [!CAUTION]
+> **Why this single command is mandatory**: If you run `docker compose up` while `backend/.env` is missing, Docker Engine will automatically create a **directory** named `backend/.env` on your host machine to satisfy the volume mount, which immediately crashes the container on startup with `ExitCode 127: not a directory`. Running the copy command above completely prevents this!
+
+That's it! You are done with configuration. Proceed directly to **[Step 5: Run the App with Docker Compose](#step-5-run-the-app-with-docker-compose)**.
+
 ---
 
-### 4.2 Choose Your Configuration Method
+### 4.2 (Optional for Advanced Users) Pre-Configuring via `.env`
 
-Second Brain offers two ways to configure your AI model credentials:
+If you are an experienced developer and prefer headless or file-based configuration before launching Docker, you can optionally edit `backend/.env` in your text editor:
 
-#### Method A: Zero-Editing UI Setup (Recommended for Newbies)
-You don't need to touch or edit text files! Simply copy `.env.example` to `.env` as shown above, keep the default placeholder values, and proceed directly to [Step 5: Run the App](#step-5-run-the-app-with-docker-compose). Once the app is running:
-1. Open [http://localhost:8000](http://localhost:8000) in your browser.
-2. Click the **`⚙️ Settings`** button in the top bar (or click the amber alert banner above the chat).
-3. Navigate to **Tab 3: Ingestion & AI Defaults**.
-4. Enter your API key and click **"Verify & Save"**. The system performs a live 5-second test with the provider and activates your model immediately without restarting Docker!
-
-#### Method B: File-Based Setup (Traditional)
-If you prefer configuring credentials before launching:
-
-Open `backend/.env` in any text editor (Notepad, VS Code, nano, or TextEdit):
 - **Windows**: `notepad backend\.env`
 - **macOS**: `open -e backend/.env`
 - **Linux**: `nano backend/.env`

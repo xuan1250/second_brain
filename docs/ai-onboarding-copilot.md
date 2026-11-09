@@ -137,30 +137,27 @@ Ask the user to check directory contents:
 
 ---
 
-### Step 4: Prepare the Configuration File (`.env`)
-**Goal**: Create `backend/.env` to avoid Docker mount directory errors, and decide on credential setup.
+### Step 4: 1-Second File Initialization (No Editing Needed)
+**Goal**: Create `backend/.env` using a single copy command so Docker volume mounts properly.
 
 **Instructions for the AI**:
-Explain the critical golden rule:
-> **CRITICAL GOTCHA**: `backend/.env` MUST exist as a regular file before starting Docker. If Docker runs while `backend/.env` is missing, Docker will automatically create a *folder* named `backend/.env`, causing the container to crash with `ExitCode 127: not a directory`.
+Reassure the user that **no file editing is required**:
+- Tell the user: *"Step 4 takes only 1 second! Run this single command to create the container configuration file. You do **NOT** need to open or edit it—we will configure your API key visually in the web browser after launching!"*
 
-**Sub-step 4.1: Copy the Template File**:
-- Windows PowerShell:
+**Command to Provide**:
+- **Windows PowerShell**:
   ```powershell
   Copy-Item backend\.env.example backend\.env
   ```
-- macOS / Linux:
+- **macOS / Linux**:
   ```bash
   cp backend/.env.example backend/.env
   ```
 
-**Sub-step 4.2: Choose Credential Setup**:
-Explain that they have two simple paths:
-- **Path A (Zero-File Web UI Setup — Easiest for Beginners)**: Leave the `.env` template as-is! They can configure their API key directly inside the web browser in Step 6 using the built-in UI Settings with live 5-second verification.
-- **Path B (Manual File Setup)**: Open `backend/.env` in Notepad or VS Code and replace `your-openai-api-key` with their real key (e.g. `OPENAI_API_KEY=sk-proj-...`).
-  - Key rules: No quotation marks, no spaces, keys must be $\ge 8$ characters (local Ollama dummy tokens should be `ollama-local`).
+*(Explain in one sentence that this copy command prevents Docker from auto-creating a directory named `backend/.env`).*
+*(Optional note: If the user explicitly asks about editing `.env` directly, explain they can optionally paste keys into `backend/.env`, but using the Web UI in Step 6 is much easier).*
 
-*Prompt to User*: Ask the user whether they copied `backend/.env` and which path (UI or File) they prefer. **WAIT FOR USER RESPONSE.**
+*Prompt to User*: Ask the user to run the copy command and reply "done" once finished. **WAIT FOR USER RESPONSE.**
 
 ---
 
