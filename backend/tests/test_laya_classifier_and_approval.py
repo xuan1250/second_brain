@@ -42,6 +42,7 @@ from src.ingestion.classifier import (
     SectionOverride,
     StubLayaClassifier,
     SubdomainSpec,
+    _extract_laya_answer,
     get_classifier,
     get_taxonomy_catalog,
     invalidate_taxonomy_catalog,
@@ -984,3 +985,100 @@ async def test_epistemic_partitioned_prompt_and_xml_context():
     assert "'engineering'" in sys_msg.content
     assert "'economics'" in sys_msg.content
     assert "'law'" in sys_msg.content
+
+
+def test_extract_laya_answer_formats():
+    """Verify _extract_laya_answer handles laya-rl-agent, legacy flat dicts, and malformed inputs."""
+    # 1. Real laya-rl-agent schema
+    pred_rl = {
+        "model": "laya-rl-agent",
+        "answers": {
+            "domain": {
+                "type": "choice",
+                "choice": "economics",
+                "probabilities": {"engineering": 0.0002, "economics": 0.9998, "law": 0.0, "general": 0.0},
+                "confidence": 0.9985,
+                "answer_confidence": 0.9998,
+                "action": {"act_probability": 1.0},
+            }
+        },
+        "usage": {"input_tokens": 1024},
+    }
+    choice, conf = _extract_laya_answer(pred_rl, "domain")
+    assert choice == "economics"
+    assert round(conf, 4) == 0.9998
+
+    # 2. Legacy / flat dictionary schema
+    pred_flat = {
+        "domain": {
+            "answer": "law",
+            "confidence": 0.88,
+        }
+    }
+    choice_flat, conf_flat = _extract_laya_answer(pred_flat, "domain")
+    assert choice_flat == "law"
+    assert round(conf_flat, 2) == 0.88
+
+    # 3. Missing question key
+    choice_miss, conf_miss = _extract_laya_answer(pred_rl, "unknown_key")
+    assert choice_miss is None
+    assert conf_miss == 0.0
+
+    # 4. Non-dict or None
+    assert _extract_laya_answer(None, "domain") == (None, 0.0)
+    assert _extract_laya_answer("not a dict", "domain") == (None, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_laya_classifier_real_payload_parsing_no_spurious_fallback():
+    """Verify LayaDomainClassifier parses laya-rl-agent dictionary and does NOT trigger LLM fallback when confidence is high."""
+    class MockLayaAgent:
+        def predict(self, state, questions):
+            q_keys = list(questions.keys())
+            if "domain" in q_keys:
+                return {
+                    "model": "laya-rl-agent",
+                    "answers": {
+                        "domain": {
+                            "type": "choice",
+                            "choice": "economics",
+                            "probabilities": {"engineering": 0.0002, "economics": 0.9998, "law": 0.0, "general": 0.0},
+                            "confidence": 0.9985,
+                            "answer_confidence": 0.9998,
+                            "action": {"act_probability": 1.0},
+                        }
+                    },
+                    "usage": {"input_tokens": 1024},
+                }
+            elif "economics_subdomain" in q_keys:
+                return {
+                    "model": "laya-rl-agent",
+                    "answers": {
+                        "economics_subdomain": {
+                            "type": "choice",
+                            "choice": "econ.finance",
+                            "probabilities": {"econ.accounting": 0.2462, "econ.finance": 0.4906, "econ.investment": 0.0591, "econ.taxation": 0.2041},
+                            "confidence": 0.1446,
+                            "answer_confidence": 0.4906,
+                            "action": {"act_probability": 1.0},
+                        }
+                    },
+                    "usage": {"input_tokens": 965},
+                }
+            return {"model": "laya-rl-agent", "answers": {}, "usage": {}}
+
+    classifier = LayaDomainClassifier(model_name="convaiinnovations/laya-multilingual")
+    classifier._agent = MockLayaAgent()
+
+    result = await classifier.classify_document(
+        "Introductory economics text on market equilibrium and macroeconomics.",
+        filename="economics.pdf",
+    )
+
+    assert result.fallback_used is False
+    assert result.recommended.primary_domain == "economics"
+    assert result.recommended.primary_subdomain == "econ.finance"
+    assert round(result.recommended.confidence, 4) == 0.9998
+    assert "Laya decision: domain=economics" in result.recommended.reasoning
+    assert "LLM fallback" not in result.recommended.reasoning
+

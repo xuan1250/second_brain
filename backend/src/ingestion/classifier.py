@@ -756,6 +756,47 @@ class StubLayaClassifier(BaseDomainClassifier):
         )
 
 
+def _extract_laya_answer(pred: Any, q_key: str) -> tuple[Optional[str], float]:
+    """Safely extract choice/answer and confidence from Laya agent prediction payload.
+
+    Supports both Laya v1/v2 schema (nested under 'answers' with 'choice' and 'answer_confidence')
+    and legacy/flat dictionaries.
+    """
+    if not isinstance(pred, dict):
+        return None, 0.0
+
+    # Look under "answers" dict first (laya-rl-agent standard), then root level
+    answers_dict = pred.get("answers")
+    item = None
+    if isinstance(answers_dict, dict) and q_key in answers_dict:
+        item = answers_dict.get(q_key)
+    elif q_key in pred:
+        item = pred.get(q_key)
+
+    if not isinstance(item, dict):
+        return None, 0.0
+
+    # Choice may be in "choice" (standard for choice questions) or "answer" or "value"
+    choice = item.get("choice")
+    if choice is None:
+        choice = item.get("answer")
+    if choice is None:
+        choice = item.get("value")
+    if choice is not None:
+        choice = str(choice).strip()
+
+    # Calibrated confidence: prefer "answer_confidence" then "confidence"
+    raw_conf = item.get("answer_confidence")
+    if raw_conf is None:
+        raw_conf = item.get("confidence", 0.0)
+    try:
+        conf = float(raw_conf)
+    except (TypeError, ValueError):
+        conf = 0.0
+
+    return choice, conf
+
+
 class LayaDomainClassifier(BaseDomainClassifier):
     """Lazy singleton loading convaiinnovations/laya-multilingual with H1/H2 override scanning and LLM fallback."""
 
@@ -946,8 +987,9 @@ class LayaDomainClassifier(BaseDomainClassifier):
             domain_pred = agent.predict(state_text, domain_q)
             raw_answers["domain_prediction"] = domain_pred
 
-            domain_ans = domain_pred.get("domain", {}).get("answer", "general")
-            domain_conf = float(domain_pred.get("domain", {}).get("confidence", 0.0))
+            extracted_domain, extracted_conf = _extract_laya_answer(domain_pred, "domain")
+            domain_ans = extracted_domain or "general"
+            domain_conf = extracted_conf
 
             if domain_ans not in catalog.domains:
                 domain_ans = "general"
@@ -961,8 +1003,7 @@ class LayaDomainClassifier(BaseDomainClassifier):
                 sub_q = {sub_q_key: questions[sub_q_key]}
                 sub_pred = agent.predict(state_text, sub_q)
                 raw_answers["subdomain_prediction"] = sub_pred
-                cand_sub = sub_pred.get(sub_q_key, {}).get("answer")
-                cand_conf = float(sub_pred.get(sub_q_key, {}).get("confidence", 0.0))
+                cand_sub, cand_conf = _extract_laya_answer(sub_pred, sub_q_key)
                 dom_obj = catalog.get_domain(domain_ans)
                 if cand_sub and dom_obj and cand_sub in dom_obj.subdomains:
                     subdomain_ans = cand_sub
@@ -974,7 +1015,7 @@ class LayaDomainClassifier(BaseDomainClassifier):
             # Stage 3: H1/H2 Section-override scanning
             section_overrides: list[SectionOverride] = []
             if sections:
-                for sec in sections:
+                for sec in sections[:20]:
                     h_path = sec.get("heading_path", "")
                     sec_content = sec.get("text", "").strip()
                     if len(sec_content) < 80:
@@ -982,8 +1023,7 @@ class LayaDomainClassifier(BaseDomainClassifier):
 
                     sec_state = f"Heading: {h_path}\n\n{sec_content[:2000]}"
                     sec_pred = agent.predict(sec_state, domain_q)
-                    sec_domain = sec_pred.get("domain", {}).get("answer")
-                    sec_conf = float(sec_pred.get("domain", {}).get("confidence", 0.0))
+                    sec_domain, sec_conf = _extract_laya_answer(sec_pred, "domain")
 
                     # Section override threshold: confidence >= 0.75 and different domain
                     if sec_domain and sec_domain in catalog.domains and sec_domain != domain_ans and sec_conf >= 0.75:
@@ -991,7 +1031,7 @@ class LayaDomainClassifier(BaseDomainClassifier):
                         sec_sub_key = f"{sec_domain}_subdomain"
                         if sec_sub_key in questions:
                             sec_sub_pred = agent.predict(sec_state, {sec_sub_key: questions[sec_sub_key]})
-                            cand_sec_sub = sec_sub_pred.get(sec_sub_key, {}).get("answer")
+                            cand_sec_sub, _ = _extract_laya_answer(sec_sub_pred, sec_sub_key)
                             sec_dom_obj = catalog.get_domain(sec_domain)
                             if cand_sec_sub and sec_dom_obj and cand_sec_sub in sec_dom_obj.subdomains:
                                 sec_sub = cand_sec_sub

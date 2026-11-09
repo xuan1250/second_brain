@@ -310,6 +310,10 @@ function AwaitingApprovalCard({
     ? Math.round(profile.confidence * 100)
     : 80;
 
+  const isLLMFallback = Boolean(
+    profile?.reasoning?.toLowerCase().includes("llm fallback")
+  );
+
   const handleApproveRecommended = (e: React.MouseEvent) => {
     e.stopPropagation();
     onApprove(doc.id);
@@ -334,7 +338,11 @@ function AwaitingApprovalCard({
       <div className="flex items-center justify-between gap-2 border-b border-amber-500/20 pb-1.5">
         <div className="flex items-center gap-1.5 font-semibold text-amber-300">
           <Sparkles className="h-3.5 w-3.5 text-amber-400" />
-          <span>Laya Classification Recommendation</span>
+          <span>
+            {isLLMFallback
+              ? "LLM Fallback Recommendation"
+              : "Laya Classification Recommendation"}
+          </span>
         </div>
         <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-mono font-medium text-amber-200">
           {confidencePct}% conf
