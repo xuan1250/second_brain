@@ -189,6 +189,8 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
 Both services publish on **`127.0.0.1` only** and the API has **no authentication**. This is deliberate for single-user local use (see [decision ledger](system-architecture.md#decision-ledger)). Do not change the port bindings to `0.0.0.0` or put the app behind a public proxy without first adding authentication — anyone who can reach port 8000 can upload and delete documents.
 
+When accessing the web UI across a trusted local network or reverse proxy, configure allowed client origins by setting `CORS_ORIGINS` in `backend/.env` (comma-separated list, e.g. `CORS_ORIGINS=http://192.168.1.50:5173,http://lan-host:8000`), which automatically merges with the default localhost origins.
+
 ## Image build
 
 The `Dockerfile` stages are commented inline; the design choices that are not obvious from it:
