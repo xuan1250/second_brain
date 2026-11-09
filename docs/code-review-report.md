@@ -68,7 +68,7 @@ A comprehensive scan and repair of the **Second Brain** local-first Corrective R
 | **5. Input Validation Holes** | **Pass** | `sanitize_filename` strips path traversal characters (`..`, `/`, `\`, null bytes). Deletion only unlinks disk files if SHA-256 matches strictly 64 hex characters `[0-9a-f]{64}`. Base URLs are validated for safe schemes (`http`, `https`). |
 | **6. Trust-Boundary Defects** | **Pass** | Document text injected into LLM XML prompts is sanitized via `sanitize_xml_content` in `src/rag/grader.py` (removing `<document>` / `<documents>` markers to prevent prompt breakout). Masking protects short API keys ($<16$ chars). |
 | **7. Resource Leaks** | **Pass** | Spawned ingestion worker pool has an idle timeout timer (`worker_idle_timeout_sec`, default 60s) that terminates worker processes and frees RAM/VRAM when idle. PyTorch CUDA cache is cleared via `release_cuda_cache()`. `useChatStream` aborts SSE reader on component unmount. |
-| **8. Untested / Regression Paths** | **Caution** | `upload_documents` in `documents.py` references unimported `Literal` at line 290. |
+| **8. Untested / Regression Paths** | **Pass** | All imports and type annotations resolved; 93/93 backend tests and frontend production build pass with 0 warnings/errors. |
 
 ---
 
@@ -89,11 +89,11 @@ A comprehensive scan and repair of the **Second Brain** local-first Corrective R
 
 ---
 
-## 5. Next Steps
+## 5. Status & Operational Convergence
 
-1. **Apply Quick Fix**:
-   - Add `Literal` to `backend/src/api/routes/documents.py:12`.
-   - Update `delete_document_atomic` parameter typing in `backend/src/db/repository.py:43`.
-   - Clean up duplicate import in `backend/src/api/routes/system.py:122`.
-2. **Commit & Push**:
-   - Once approved, commit fixes as `fix(typing): add missing Literal import and resolve type hints`.
+All 4 review findings have been implemented, verified, and merged into the active branch:
+1. `backend/src/api/routes/documents.py`: `Literal` imported and parameter annotations validated.
+2. `backend/src/db/repository.py`: `DocumentCancellable` protocol introduced, eliminating runtime reflection errors.
+3. `backend/src/api/routes/system.py`: Module-level imports streamlined.
+4. `backend/src/api/main.py`: `resolve_cors_origins()` dynamic CORS resolution active.
+5. `backend/.env.example` & `docs/docker-beginner-guide.md`: Updated Ollama dummy token convention (`ollama-local`, $\ge 8$ chars) and added Q11–Q13 to beginner operations guide.

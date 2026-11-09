@@ -61,6 +61,9 @@ Welcome! This comprehensive guide is designed for anyone—from complete beginne
     - [Q8: PDF rendering / worker script issues](#q8-pdf-rendering--worker-script-issues)
     - [Q9: Managing VRAM when co-hosting with Ollama on 8 GB GPU](#q9-managing-vram-when-co-hosting-with-ollama-on-8-gb-gpu)
     - [Q10: Upgrading from an earlier version & legacy backfill](#q10-upgrading-from-an-earlier-version--legacy-backfill)
+    - [Q11: Split persistence & docker compose down -v](#q11-docker-compose-down--v-vs-docker-compose-down--split-persistence)
+    - [Q12: Windows PowerShell command syntax traps](#q12-windows-powershell-command-syntax-traps-curlexe-splatting---vs-)
+    - [Q13: Docker creates backend/.env as a directory](#q13-docker-creates-backendenv-as-a-directory--exitcode-127-not-a-directory)
 
 ---
 
@@ -97,7 +100,7 @@ The application runs as two orchestrated Docker services communicating over an i
 |                                                                                         |
 |  +---------------------------+  +----------------------------------------------------+  |
 |  |     Frontend SPA Mount    |  |               FastAPI Headless Gateway             |  |
-|  |     (/app/frontend/dist)  |  |            (/api/v1/documents, /chat, /system)     |  |
+|  |     (/app/frontend/dist)  |  |   (/api/v1/documents, /domains, /chat, /system)    |  |
 |  +---------------------------+  +-------------------------+--------------------------+  |
 |                                                           |                             |
 |          +------------------------------------------------+--------------------+        |
@@ -326,7 +329,10 @@ Open your terminal or PowerShell and run:
 
 ## Step 4: Prepare the Configuration File (`.env`)
 
-Inside `second-brain/backend/`, there is a template file named `.env.example`. You must copy it to `.env` and fill in your API key.
+Inside `second-brain/backend/`, there is a template file named `.env.example`. You must copy it to `backend/.env` before launching Docker.
+
+> [!CAUTION]
+> **Mandatory File Pre-Creation**: You **must** copy `.env.example` to `.env` before running `docker compose up`. If you launch Docker while `backend/.env` is missing, Docker Engine will automatically create a **directory** named `backend/.env` on your host machine to satisfy the volume mount, which immediately crashes the container on startup with `ExitCode 127: not a directory`.
 
 ### 4.1 Copy the Template
 
@@ -341,7 +347,19 @@ Inside `second-brain/backend/`, there is a template file named `.env.example`. Y
 
 ---
 
-### 4.2 Configure Your API Keys
+### 4.2 Choose Your Configuration Method
+
+Second Brain offers two ways to configure your AI model credentials:
+
+#### Method A: Zero-Editing UI Setup (Recommended for Newbies)
+You don't need to touch or edit text files! Simply copy `.env.example` to `.env` as shown above, keep the default placeholder values, and proceed directly to [Step 5: Run the App](#step-5-run-the-app-with-docker-compose). Once the app is running:
+1. Open [http://localhost:8000](http://localhost:8000) in your browser.
+2. Click the **`⚙️ Settings`** button in the top bar (or click the amber alert banner above the chat).
+3. Navigate to **Tab 3: Ingestion & AI Defaults**.
+4. Enter your API key and click **"Verify & Save"**. The system performs a live 5-second test with the provider and activates your model immediately without restarting Docker!
+
+#### Method B: File-Based Setup (Traditional)
+If you prefer configuring credentials before launching:
 
 Open `backend/.env` in any text editor (Notepad, VS Code, nano, or TextEdit):
 - **Windows**: `notepad backend\.env`
@@ -366,6 +384,7 @@ DEEPSEEK_API_KEY=your-deepseek-api-key
 
 > [!IMPORTANT]
 > - Do not put quotation marks or spaces around your key.
+> - Keys must be at least 8 characters long (dummy tokens for local offline endpoints like Ollama should be `ollama-local`).
 > - Leave any providers you are not using with the `your-...` prefix (the backend safely ignores them).
 > - Save the file and close your editor.
 
@@ -652,13 +671,13 @@ In the Right Pane, type a question about your documents and press **Send** (or E
 
 ### 7.8 Switching AI Models on the Fly
 
-Use the model selector dropdown in the Assistant header to switch between configured providers:
-- **OpenAI**: `gpt-4o`, `gpt-4o-mini`, `o1`
-- **Anthropic**: `claude-sonnet-5-5`, `claude-haiku-4-5`
-- **DeepSeek**: `deepseek-v4-pro`, `deepseek-chat`
-- **Local Models**: Custom OpenAI-compatible endpoints (e.g. Ollama `llama3.1`)
+Use the model selector dropdown in the Assistant header to switch between configured providers (or type any custom model name):
+- **OpenAI**: `gpt-5`, `gpt-5-mini`, `gpt-4o`, `gpt-4o-mini`, `o3-mini`, `o1`
+- **Anthropic**: `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-4-5`
+- **DeepSeek**: `deepseek-v4-pro`, `deepseek-flash`, `deepseek-chat`, `deepseek-reasoner`
+- **Local Models**: Custom OpenAI-compatible endpoints (e.g. Ollama `llama3.1`, `qwen2.5`, vLLM, LM Studio)
 
-*Switching models is instantaneous and requires zero server restarts.*
+*Switching models is instantaneous, scopes to your current active chat thread, and requires zero server restarts.*
 
 ---
 
@@ -690,7 +709,8 @@ Click the **`⚙️ Settings`** button in the top application bar to open the un
 | **Stop Stack (Pause)** | `docker compose down` |
 | **View Live Container Logs** | `docker compose logs -f second-brain` |
 | **Restart Application** | `docker compose restart second-brain` |
-| **Update Code & Rebuild** | `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build --no-deps second-brain` |
+| **Update Code & Rebuild (CPU)** | `docker compose up -d --build --no-deps second-brain` |
+| **Update Code & Rebuild (GPU)** | `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build --no-deps second-brain` |
 | **Check Live Memory & VRAM** | `curl.exe -fsS http://127.0.0.1:8000/api/v1/system/memory` |
 | **Trigger Immediate Memory Reclaim** | `curl.exe -X POST http://127.0.0.1:8000/api/v1/system/memory/reclaim` |
 | **Pause Ongoing Ingestion** | `curl.exe -X POST http://127.0.0.1:8000/api/v1/system/ingestion/pause` |
@@ -706,7 +726,11 @@ When updating Second Brain to a new version, rebuild only the application servic
 # 1. Pull latest code
 git pull origin master
 
-# 2. Rebuild and recreate only the second-brain container
+# 2. Rebuild and recreate only the second-brain container:
+# For CPU Mode:
+docker compose up -d --build --no-deps second-brain
+
+# For NVIDIA GPU Mode:
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build --no-deps second-brain
 ```
 *Your vector index stays completely uninterrupted and all indexed documents remain available.*
@@ -886,15 +910,23 @@ If you want a completely offline, air-gapped Second Brain using local open-sourc
 3. Configure Ollama to accept connections from Docker:
    - On Windows: Set environment variable `OLLAMA_HOST=0.0.0.0:11434` in System Properties or run `setx OLLAMA_HOST "0.0.0.0:11434"`.
    - On Linux: Edit `/etc/systemd/system/ollama.service.d/environment.conf` and set `Environment="OLLAMA_HOST=0.0.0.0:11434"`.
-4. In `backend/.env`, configure:
-   ```env
-   LLM_PROVIDER=openai_compatible
-   LLM_MODEL_NAME=llama3.1
-   LLM_BASE_URL=http://host.docker.internal:11434/v1
-   LLM_API_KEY=ollama
-   ```
-   *(Inside Docker containers, `host.docker.internal` securely routes to your host computer).*
-5. Restart Second Brain:
+4. Configure Second Brain to use Ollama via either method:
+   - **Method A (Web UI — No file editing)**:
+     1. Open **`⚙️ Settings`** -> **Tab 3: Ingestion & AI Defaults**.
+     2. Set **Default Provider** to `OpenAI-Compatible (Custom / GLM / vLLM)`.
+     3. Set **Model Name** to `llama3.1`.
+     4. Set **Base URL** to `http://host.docker.internal:11434/v1`.
+     5. Set **API Key** to `ollama-local` (must be $\ge 8$ characters to satisfy API key validation).
+     6. Click **"Verify & Save"**.
+   - **Method B (`backend/.env` file)**:
+     ```env
+     LLM_PROVIDER=openai_compatible
+     LLM_MODEL_NAME=llama3.1
+     LLM_BASE_URL=http://host.docker.internal:11434/v1
+     LLM_API_KEY=ollama-local
+     ```
+     *(Inside Docker containers, `host.docker.internal` securely routes to your host computer. Keys must be at least 8 characters long).*
+5. If using Method B, restart Second Brain:
    ```bash
    docker compose restart second-brain
    ```
@@ -995,6 +1027,41 @@ When you pass the `-v` flag (`docker compose down -v`), Docker deletes the named
    curl.exe -fsS -X POST http://127.0.0.1:8000/api/v1/chat/completions -H "Content-Type: application/json" -d "{\"message\":\"hello\",\"domain\":\"general\"}"
    ```
 5. **Node / NPM script policy**: If PowerShell blocks script execution (`running scripts is disabled on this system`), invoke npm commands using `npm.cmd` (e.g. `npm.cmd run build`).
+
+---
+
+### Q13: Docker creates 'backend/.env' as a directory / ExitCode 127: not a directory
+
+**Symptom**: Container fails on startup with:
+`failed to create shim task: OCI runtime create failed: ... not a directory: unknown` or container exits immediately with code 127.  
+**Cause**: You ran `docker compose up` before creating `backend/.env`. When Docker attempts to mount a non-existent host file path (`./backend/.env:/app/backend/.env:ro`), it automatically creates a **directory** on the host named `backend/.env`. The container cannot mount a directory over a file target.  
+**Solution**:
+1. Stop any running containers:
+   ```bash
+   docker compose down
+   ```
+2. Delete the incorrectly created `backend/.env` directory:
+   - **Windows PowerShell**:
+     ```powershell
+     Remove-Item -Recurse -Force backend\.env
+     ```
+   - **macOS / Linux**:
+     ```bash
+     rm -rf backend/.env
+     ```
+3. Pre-create the actual file by copying the template:
+   - **Windows PowerShell**:
+     ```powershell
+     Copy-Item backend\.env.example backend\.env
+     ```
+   - **macOS / Linux**:
+     ```bash
+     cp backend/.env.example backend/.env
+     ```
+4. Re-launch the stack:
+   ```bash
+   docker compose up -d
+   ```
 
 ---
 
