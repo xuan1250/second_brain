@@ -685,20 +685,145 @@ Use the model selector dropdown in the Assistant header to switch between config
 
 ---
 
-### 7.9 Managing Custom Domains, Lexicon & Workspace Settings
+### 7.9 Managing Custom Domains, Lexicon & Workspace Settings (`⚙️ Settings`)
 
-Click the **`⚙️ Settings`** button in the top application bar to open the unified **Workspace Settings & Dynamic Taxonomy** modal:
+Click the **`⚙️ Settings`** button in the top application bar (or click any alert banner link) to open the unified **Workspace Settings & Dynamic Taxonomy** modal. The modal contains **three specialized tabs**:
 
-1. **Tab 1 — Domains & Subdomains**:
-   - **Starter System Domains**: The 4 starter domains (`Engineering`, `Economics`, `Law`, `General`) are marked `SYSTEM` (`is_system = true`) to protect core epistemic routing; you can still customize their icons, color tokens, descriptions, classifier hint keywords, and subdomains.
-   - **Create & Edit Custom Domains**: Create up to 10 active top-level domains with custom emoji icons, a 10-color theme palette (`cyan`, `emerald`, `amber`, `rose`, `violet`, `blue`, `teal`, `orange`, `fuchsia`, `slate`), epistemic modalities, chunking strategy presets (`Standard Markdown`, `Academic Equations`, `Statutory Clauses`, `Financial Tables`), and bilingual (EN/VI) classifier keywords.
-   - **Safe Delete & Reassign**: Deleting a custom domain opens a confirmation dialog to reassign all affected documents, chunks, section overrides, and Qdrant vectors to a chosen target domain (defaulting to `General`), with an optional checkbox to re-index affected documents in the background.
-2. **Tab 2 — Polysemy Lexicon**:
-   - Browse, search, add, and delete domain-specific definitions and contrastive warnings for polysemic terms (terms whose meaning shifts across disciplines, such as *"consideration"* in Law vs. General, or *"yield"* in Engineering vs. Finance).
-3. **Tab 3 — Ingestion & AI Defaults**:
-   - **Ingestion & Approval Engine**: Configure workspace-wide defaults for **Parsing Engine** (`Auto`, `GPU / Deep Vision`, `Fast Path`), **Approval Gate** (`Review All`, `Auto-Approve High Conf`, `Auto-Approve All`), and **Confidence Threshold** ($50\%\text{–}99\%$).
-   - **API Keys & Live Provider Verification**: Manage and mask API keys for OpenAI, Anthropic, DeepSeek, and OpenAI-Compatible endpoints directly from the UI. Features password reveal toggles, custom Base URL for OpenAI-compatible/vLLM/Ollama proxies, 1-click **"Verify & Save"** with instant 5-second live provider ping, source badges (`UI Key` vs `.env`), and a **"Clear UI Key"** button to revert to `backend/.env`.
-   - **Proactive Warnings**: Proactive alert banners immediately highlight missing or invalid keys across Settings Tab 3, the Chat Composer, and the Header Settings button with a 1-click fix link. Saving updates the workspace in real time without restarting Docker.
+---
+
+#### 7.9.1 Tab 1 — Domains & Subdomains (Dynamic Taxonomy)
+
+Second Brain partitions your documents and vector embeddings by knowledge discipline (domain) to prevent split-brain retrieval and to enable side-by-side epistemic conflict analysis.
+
+##### Core Concepts: System vs. Custom Domains
+- **4 Starter System Domains**: `Engineering` (🔬), `Economics` (📊), `Law` (⚖️), and `General` (🌐). These are marked `SYSTEM` to anchor core epistemic retrieval and cannot be deleted. You can, however, customize their icons, descriptions, colors, hint keywords, chunking strategies, and add/remove subdomains.
+- **Custom Domains**: You can create up to **10 active top-level domains** tailored to your organization (e.g. `Biomedicine`, `Architecture`, `Taxation`, `Cybersecurity`).
+
+##### What Every Field Means:
+| Setting Field | What It Controls | Permitted Values / Options | Recommended Setting |
+|---|---|---|---|
+| **Domain Name** | Display title in library facet tabs, citation badges, and conflict matrix. | Text (e.g. `Biomedicine`, `Taxation`). | Capitalized title. |
+| **Slug** | Internal identifier used in database foreign keys and Qdrant vector payload filters. | Lowercase alphanumeric with hyphens (e.g. `biomedicine`). | Auto-generated from name. |
+| **Domain Icon** | Emoji avatar rendered on document cards, facet buttons, and citations. | Any single emoji (e.g. `🧬`, `🏛️`, `🛡️`). | Visually distinctive emoji. |
+| **Color Theme Token** | Accent color for badges, border highlights, and conflict matrix columns. | 10 colors: `cyan`, `emerald`, `amber`, `rose`, `violet`, `blue`, `teal`, `orange`, `fuchsia`, `slate`. | Pick distinct from existing domains. |
+| **Epistemic Modality** | Declares how truth and evidence are validated in this field. Dictates synthesis weighting. | • `empirical`: Physical observation & experimental data.<br>• `normative`: Statutes, legal rules & binding compliance.<br>• `quantitative`: Financial metrics & accounting ledgers.<br>• `descriptive`: General narratives & historical facts. | Match the discipline's epistemological basis. |
+| **Epistemic Priority Tier** | Tie-breaking weight (1 to 5) when federating cross-domain retrieval. | 1 (highest authority) to 5 (baseline). | 1 for primary discipline, 3 for general. |
+| **Chunking Strategy Preset** | Specializes how parent-child text chunks are partitioned during document ingestion. | • `standard_markdown`: 256-token child / 1024-token parent blocks.<br>• `academic_equations`: Binds LaTeX formula blocks `$$...$$` so mathematical proofs are never broken.<br>• `statutory_clauses`: Binds legal articles (`Article N`, `Section N.M`) preserving clause boundaries.<br>• `financial_tables`: Re-injects Markdown table headers into every 50-row chunk. | Choose based on typical document types. |
+| **Classifier Hint Keywords** | Comma-separated bilingual (English/Vietnamese) trigger terms fed to the Laya zero-shot classifier. | Comma-separated phrases (e.g. `oncology, clinical trials, FDA, ung thư, lâm sàng`). | 6–12 representative domain terms in EN & VI. |
+| **Subdomains** | Nested granular categories within the domain (e.g. `corporate-law`, `tax-law`). | Name, Slug, and Standard Bodies (e.g. `SEC, IRS, IFRS`). | Add 2–4 key specializations. |
+| **Re-index Affected Documents** | Checkbox when modifying a domain. | Boolean. | Check if changing Chunking Strategy or Keywords. |
+
+##### Step-by-Step Example: Adding a "Biomedicine" Domain
+1. Open **`⚙️ Settings`** ➔ **Tab 1: Domains & Subdomains**.
+2. Click **"+ New Domain"** in the top right.
+3. Fill out the form:
+   - **Name**: `Biomedicine` (Slug auto-fills to `biomedicine`).
+   - **Icon**: `🧬`.
+   - **Color**: Select `emerald` from the palette.
+   - **Epistemic Modality**: Select `empirical (Observation & Measurement)`.
+   - **Epistemic Priority Tier**: Set to `2`.
+   - **Chunking Strategy**: Select `academic_equations (Preserves Math & Proofs)`.
+   - **Classifier Keywords**: `pharmacology, clinical trials, FDA, oncology, drug interactions, dược lý, thử nghiệm lâm sàng`.
+4. Click **"Create Domain"**.
+5. Click **"Manage Subdomains"** under the new Biomedicine card:
+   - Add Subdomain: Name: `Pharmacology`, Slug: `pharmacology`, Standard Bodies: `FDA, EMA, WHO`.
+   - Add Subdomain: Name: `Genomics`, Slug: `genomics`, Standard Bodies: `NIH, HUGO`.
+6. Now, whenever you upload a biomedical paper, Second Brain automatically classifies it into `Biomedicine`, applies equation-preserving chunking, and colors all citation pills emerald green!
+
+##### Safe Domain Deletion & Reassignment:
+If you delete a custom domain, Second Brain guarantees **zero data loss**:
+- A confirmation dialog prompts you to select a **Target Domain** (defaulting to `General`) and optional Target Subdomain.
+- All documents, chunks, section overrides, and Qdrant vector payloads are atomically moved to the target domain.
+- Check the box **"Re-index affected documents in background"** to re-embed points under the target domain's chunking preset.
+
+---
+
+#### 7.9.2 Tab 2 — Polysemy Lexicon
+
+##### What is Polysemy?
+Polysemy occurs when a single term has radically different meanings across different fields. For example:
+- *"Consideration"*: In everyday English, it means thoughtful attention. In **Law**, it is the mandatory quid-pro-quo exchange of value required to make a contract legally binding!
+- *"Yield"*: In traffic/agriculture, it means produce or give way. In **Finance**, it is the return on capital. In **Engineering**, it is the mechanical stress limit where material deforms permanently.
+- *"Depreciation"*: In **Accounting**, it is the amortization of monetary cost over time. In **Engineering**, it is physical friction and mechanical wear.
+
+When asking cross-domain questions (e.g. *"How does depreciation impact our equipment contract?"*), Second Brain's pre-analyzer detects these polysemic terms, retrieves context from both domains, and builds a side-by-side **Epistemic Conflict Matrix**!
+
+##### Setting Fields:
+| Field | Meaning | Example |
+|---|---|---|
+| **Term** | The polysemic keyword or phrase. | `consideration`, `yield`, `liquidity` |
+| **Domain** | The specific domain this sense belongs to. | `Law`, `Engineering`, `Economics` |
+| **Sense (Definition)** | Discipline-specific technical definition. | `A bargained-for exchange of legal value or promise required to form a valid contract.` |
+| **Contrastive Warning** | Explicit negative guidance injected into the LLM system prompt. | `Do not confuse with general politeness or consideration. In contract formation, consideration is strictly an exchange of value.` |
+
+##### Step-by-Step Example: Registering Polysemy for "Consideration"
+1. Open **`⚙️ Settings`** ➔ **Tab 2: Polysemy Lexicon**.
+2. Click **"+ Add Lexicon Entry"**.
+3. Fill out:
+   - **Term**: `consideration`
+   - **Domain**: `Law`
+   - **Sense**: `A bargained-for exchange of legal value, performance, or promise required by common law to render a contract legally enforceable.`
+   - **Contrastive Warning**: `Do not interpret as courtesy or general thinking. If absent, the agreement is an unenforceable gift promise, regardless of written intent.`
+4. Click **"Save Entry"**.
+5. Add a second entry for `General`:
+   - **Term**: `consideration`
+   - **Domain**: `General`
+   - **Sense**: `Thoughtful attention, careful reflection, or regard for others' feelings.`
+   - **Contrastive Warning**: `Non-technical everyday sense.`
+6. Click **"Save Entry"**.
+7. Now, whenever you query a legal document containing the word "consideration", the Assistant avoids hallucinating ordinary politeness and applies strict legal doctrine!
+
+---
+
+#### 7.9.3 Tab 3 — Ingestion & AI Defaults
+
+Tab 3 manages workspace-wide operational defaults, API credentials, and live connections.
+
+##### 1. Default Parsing & Ingestion Engine
+Controls the default engine used when files are dropped into the library:
+- `⚡ Auto (Adaptive)` *(Recommended)*: Uses the 5ms preflight probe. Clean digital PDFs process in sub-second time via PyMuPDF; complex tables, multi-column layouts, and scans route to Docling v2 + TableFormer on CUDA. Transparently fails over to CPU if memory is tight.
+- `🚀 GPU / Deep Vision`: Forces Docling v2 + RapidOCR on CUDA for every uploaded file. Maximum accuracy on complex scanned documents and formulas (~15s–30s per document).
+- `📄 Fast Path`: Forces `pymupdf4llm` on CPU for sub-second text extraction with **0 MB GPU VRAM**, preserving 100% of GPU memory for local LLMs like Ollama.
+
+##### 2. Default Human-in-the-Loop Approval Gate
+Controls whether uploaded files require operator confirmation before vector indexing:
+- `🛡️ Review All (Default)`: Pauses every uploaded document at `Awaiting Approval`. Displays an amber review card showing Laya's predicted domain, confidence, and entities. You confirm or override the domain with 1 click. Recommended for legal, financial, or compliance workflows.
+- `✨ Auto-Approve High Conf`: Automatically proceeds to vector indexing if Laya's confidence score $\ge$ the threshold (e.g. 85%). Only pauses documents where the classifier was uncertain.
+- `⚡ Auto-Approve All`: 100% automated ingestion. Accepts the top model prediction and indexes immediately without pausing.
+
+##### 3. Auto-Approve Confidence Threshold Slider
+- Range: `50%` (Permissive) to `99%` (Strict). Recommended default is `85%`.
+- Example: At `85%`, if Laya predicts a document is `Law` with `92%` confidence, it auto-indexes immediately. If confidence is `74%`, it pauses at `Awaiting Approval` for your review.
+
+##### 4. Default Workspace LLM Provider & Model
+- **Provider**: Select `OpenAI`, `Anthropic`, `DeepSeek`, or `OpenAI-Compatible (Custom / GLM / vLLM)`.
+- **Default Model**: Type or pick a suggested model (e.g. `gpt-4o`, `claude-sonnet-5-5`, `deepseek-v4-pro`, `llama3.1`).
+
+##### 5. API Key & Provider Verification Manager
+- **Credential Precedence**: UI-configured keys in SQLite `WorkspaceSettings` take precedence over read-only `backend/.env`.
+- **Live 5-Second Verification (`Verify & Save`)**: Clicking this sends a test ping (`POST /api/v1/settings/verify-key`) directly to upstream. If the key is valid, the provider badge turns into a green `✓ Verified`. If invalid (401), an error message appears immediately.
+- **Source Badges**: Displays `UI Key` (active UI override) vs `Default (.env)` (inherited from environment file).
+- **Clear UI Key Button**: Reverts the setting to use whatever key was defined in `backend/.env`.
+- **Masking & Security**: Keys are masked to `••••1234` in the UI and stored safely in local SQLite.
+
+##### Step-by-Step Example: Configuring an OpenAI API Key
+1. Open **`⚙️ Settings`** ➔ **Tab 3: Ingestion & AI Defaults**.
+2. Set **Default Provider** to `OpenAI` and **Model** to `gpt-4o`.
+3. In the **OpenAI API Key** field, click the eye icon to reveal, then paste your secret key (begins with `sk-proj-...`).
+4. Click **"Verify & Save"**.
+5. Within 2–3 seconds, you will see a green badge `✓ Verified`.
+6. Return to the chat—you are ready to query your knowledge base immediately with zero Docker restarts!
+
+##### Step-by-Step Example: Connecting 100% Offline Local Ollama
+1. Ensure Ollama is running on your machine: `ollama run llama3.1`.
+2. Open **`⚙️ Settings`** ➔ **Tab 3: Ingestion & AI Defaults**.
+3. Under **Default Workspace LLM**, select `OpenAI-Compatible (Custom / GLM / vLLM)`.
+4. Set **Default Model Name** to `llama3.1`.
+5. Under **OpenAI-Compatible Settings**:
+   - **Base URL**: Enter `http://host.docker.internal:11434/v1`
+   - **API Key**: Enter `ollama-local` (must be $\ge 8$ characters).
+6. Click **"Verify & Save"**.
+7. Once verified, all queries and embeddings run 100% locally on your computer with zero external internet traffic!
 
 ---
 

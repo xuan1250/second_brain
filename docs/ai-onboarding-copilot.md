@@ -260,6 +260,42 @@ Walk the user through their first document workflow:
 
 ---
 
+## UI SETTINGS REFERENCE & EXAMPLES (When User Asks About Settings)
+
+If the user asks about the **`⚙️ Settings`** modal, guide them through its three tabs:
+
+### 1. Tab 1: Domains & Subdomains (Dynamic Taxonomy)
+- **What it does**: Partitions documents and vector points into disciplinary knowledge boundaries (`Engineering`, `Economics`, `Law`, `General`, plus up to 10 custom domains).
+- **Key Fields**:
+  - `Name` & `Slug`: Display label and database/Qdrant filter key.
+  - `Icon` & `Color`: Emoji and 10-color palette for citation badges and conflict matrix.
+  - `Epistemic Modality`: `empirical` (tests/specs), `normative` (laws/rules), `quantitative` (financial/math), `descriptive` (general).
+  - `Chunking Preset`: `standard_markdown`, `academic_equations` (preserves LaTeX `$$`), `statutory_clauses` (preserves legal articles), or `financial_tables` (repeats spreadsheet headers).
+  - `Classifier Keywords`: Comma-separated EN/VI trigger terms for Laya zero-shot classifier.
+  - `Subdomains`: Nested categories with regulatory standard bodies (e.g. `SEC`, `FDA`, `IEEE`).
+- **Example — Adding "Biomedicine"**:
+  Name: `Biomedicine` | Icon: `🧬` | Color: `emerald` | Modality: `empirical` | Preset: `academic_equations` | Keywords: `pharmacology, oncology, clinical trials, FDA, dược lý, lâm sàng`.
+
+### 2. Tab 2: Polysemy Lexicon
+- **What it does**: Teaches the assistant when words have conflicting meanings across disciplines (e.g. *"consideration"* in Law = contract value, in General = politeness; *"yield"* in Engineering = deformation limit, in Finance = return on capital).
+- **Key Fields**: `Term`, `Domain`, `Sense (Definition)`, `Contrastive Warning`.
+- **Example — Legal Consideration**:
+  Term: `consideration` | Domain: `Law` | Sense: `A bargained-for exchange of value or promise necessary to make a contract enforceable.` | Warning: `Do not confuse with general thoughtful politeness. If missing, contract is an unenforceable gift.`
+
+### 3. Tab 3: Ingestion & AI Defaults
+- **What it does**: Configures global defaults and manages API keys with live verification.
+- **Key Fields**:
+  - `Default Ingestion Engine`: `⚡ Auto` (adaptive probe), `🚀 GPU Vision` (Docling OCR on CUDA), `📄 Fast CPU` (PyMuPDF, 0 MB VRAM).
+  - `Default Approval Gate`: `🛡️ Review All` (pauses for review), `✨ Auto ≥ 85%` (auto-indexes high-confidence files), `⚡ Auto All` (auto-indexes everything).
+  - `Confidence Threshold`: $50\%\text{–}99\%$ slider (default 85%).
+  - `Default LLM Provider & Model`: Choose active model (OpenAI, Anthropic, DeepSeek, or OpenAI-Compatible).
+  - `API Key Manager`: Enter key, click **"Verify & Save"** (pings upstream in 5s, badges `✓ Verified`).
+  - `OpenAI-Compatible Base URL`: E.g. `http://host.docker.internal:11434/v1` for local Ollama.
+- **Example — Connecting Local Ollama**:
+  Provider: `OpenAI-Compatible` | Model: `llama3.1` | Base URL: `http://host.docker.internal:11434/v1` | Key: `ollama-local` | Click **"Verify & Save"**.
+
+---
+
 ## TROUBLESHOOTING KNOWLEDGE BASE (13 Battle-Tested Scenarios)
 
 If the user reports any error or failure, match it to one of these cases and apply the exact remedy:
