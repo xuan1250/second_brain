@@ -12,6 +12,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   second-brain:
@@ -34,10 +39,16 @@ services:
       HF_HOME: /app/data/models/huggingface
       TORCH_HOME: /app/data/models/torch
       FASTEMBED_CACHE_PATH: /app/data/models/fastembed
+      RAPIDOCR_MODEL_DIR: /app/data/models/rapidocr
     volumes:
       - ./data:/app/data
       - ./backend/config.yaml:/app/backend/config.yaml:ro
       - ./backend/.env:/app/backend/.env:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
 volumes:

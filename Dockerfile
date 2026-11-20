@@ -35,7 +35,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
 # Phase 2: Copy backend application source and install project non-editable
-COPY backend/ /app/backend/
+COPY backend/pyproject.toml backend/uv.lock backend/config.yaml ./
+COPY backend/src /app/backend/src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
@@ -56,7 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create non-root user and pre-create storage & named-volume mount directories owned by appuser
 RUN groupadd --gid 10001 appuser \
     && useradd --uid 10001 --gid appuser --shell /bin/bash --create-home appuser \
-    && mkdir -p /app/data/db /app/data/raw /app/data/parsed /app/data/markdown /app/data/models \
+    && mkdir -p /app/data/db /app/data/raw /app/data/parsed /app/data/markdown /app/data/models /app/data/models/rapidocr \
     && chown -R appuser:appuser /app
 
 # Copy pre-built virtualenv, backend source, and default config from backend-builder
@@ -76,6 +77,7 @@ ENV PATH="/app/backend/.venv/bin:$PATH" \
     HF_HOME=/app/data/models/huggingface \
     TORCH_HOME=/app/data/models/torch \
     FASTEMBED_CACHE_PATH=/app/data/models/fastembed \
+    RAPIDOCR_MODEL_DIR=/app/data/models/rapidocr \
     OMP_NUM_THREADS=4
 
 EXPOSE 8000
