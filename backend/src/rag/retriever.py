@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+import logging
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient, models
@@ -20,6 +21,8 @@ from src.ingestion.indexer import (
     set_embedder,
     set_sparse_encoder,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "HybridRetriever",
@@ -223,6 +226,94 @@ def build_hybrid_query_kwargs(
     }
 
 
+def _point_payload_to_candidate(
+    point_id: Any,
+    payload: Mapping[str, Any] | None,
+    *,
+    score: float = 0.0,
+    fallback_domain: str = "general",
+) -> dict[str, Any]:
+    """Convert a Qdrant point ID and payload dict into a normalized RAG candidate dict."""
+    payload_dict = dict(payload or {})
+    chunk_id = str(payload_dict.get("chunk_id") or point_id)
+    child_text = str(payload_dict.get("child_text") or "")
+    parent_content = str(payload_dict.get("parent_content") or child_text)
+    page_numbers = [
+        int(p)
+        for p in (payload_dict.get("page_numbers") or [])
+        if isinstance(p, (int, str)) and str(p).isdigit()
+    ]
+    raw_tier = payload_dict.get("authority_tier")
+    authority_tier = int(raw_tier) if raw_tier is not None else 3
+    return {
+        "chunk_id": chunk_id,
+        "point_id": str(point_id),
+        "doc_id": str(payload_dict.get("doc_id") or ""),
+        "source_filename": str(payload_dict.get("source_filename") or ""),
+        "file_type": str(payload_dict.get("file_type") or ""),
+        "heading_path": str(payload_dict.get("heading_path") or ""),
+        "page_numbers": page_numbers,
+        "token_count": int(payload_dict.get("token_count") or 0),
+        "child_text": child_text,
+        "parent_content": parent_content,
+        "contextual_prefix": str(payload_dict.get("contextual_prefix") or ""),
+        "domain": str(payload_dict.get("domain") or fallback_domain),
+        "subdomain": str(payload_dict.get("subdomain") or "general"),
+        "epistemic_type": str(payload_dict.get("epistemic_type") or "general"),
+        "authority_tier": authority_tier,
+        "jurisdiction": str(payload_dict.get("jurisdiction") or ""),
+        "is_current": bool(payload_dict.get("is_current", True)),
+        "associated_entities": list(payload_dict.get("associated_entities") or []),
+        "record_type": payload_dict.get("record_type"),
+        "score": float(score),
+    }
+
+
+def _chunk_matches_entities(
+    candidate: Mapping[str, Any],
+    cleaned_entities_lower: set[str],
+) -> bool:
+    """Return True if candidate matches extracted entities by payload tag or text substring."""
+    if not cleaned_entities_lower:
+        return False
+    chunk_entities = {
+        str(e).strip().lower()
+        for e in (candidate.get("associated_entities") or [])
+        if str(e).strip()
+    }
+    if chunk_entities & cleaned_entities_lower:
+        return True
+    child_lower = str(candidate.get("child_text") or "").lower()
+    parent_lower = str(candidate.get("parent_content") or "").lower()
+    return any(e in child_lower or e in parent_lower for e in cleaned_entities_lower)
+
+
+def _upsert_exact_tag_candidate(
+    candidates_by_id: dict[str, dict[str, Any]],
+    point: Any,
+    *,
+    min_score: float | None = None,
+) -> str:
+    """Insert or upgrade a Qdrant point as an exact_tag_match candidate and return its chunk_id."""
+    payload = dict(point.payload or {})
+    chunk_id = str(payload.get("chunk_id") or point.id)
+    existing = candidates_by_id.get(chunk_id)
+    if existing is not None:
+        existing["exact_tag_match"] = True
+        if min_score is not None:
+            existing["score"] = max(float(existing.get("score", 0.0)), min_score)
+    else:
+        cand = _point_payload_to_candidate(
+            point.id,
+            payload,
+            score=min_score if min_score is not None else 0.0,
+            fallback_domain=str(payload.get("domain") or "general"),
+        )
+        cand["exact_tag_match"] = True
+        candidates_by_id[chunk_id] = cand
+    return chunk_id
+
+
 class HybridRetriever:
     """Executes Qdrant hybrid (dense bge-m3 + sparse BM25) search fused via RRF."""
 
@@ -241,12 +332,119 @@ class HybridRetriever:
         self.collection = collection or settings.qdrant_collection
         self.limit = limit
 
+    async def _encode_queries(
+        self,
+        query_texts: Sequence[str],
+    ) -> tuple[list[list[float]], list[Any]]:
+        """Encode queries into paired dense and sparse vectors."""
+        if isinstance(self.sparse_encoder, BgeM3SparseEncoder) and getattr(
+            self.embedder, "supports_native_sparse", False
+        ):
+            return await self.embedder.embed_documents_with_sparse(query_texts)
+        dense_vectors = await self.embedder.embed_documents(query_texts)
+        sparse_vectors = await self.sparse_encoder.encode(query_texts)
+        return dense_vectors, sparse_vectors
+
+    async def _scroll_exact_entity_points(
+        self,
+        *,
+        associated_entities: Sequence[str] | None,
+        doc_ids: Sequence[str] | None = None,
+        file_types: Sequence[str] | None = None,
+        domains: Sequence[str] | None = None,
+        subdomains: Sequence[str] | None = None,
+        max_authority_tier: int | None = None,
+        only_current: bool = False,
+        limit: int = 24,
+    ) -> list[Any]:
+        """Scroll Qdrant for exact payload matches on `associated_entities`."""
+        cleaned = [str(e).strip() for e in (associated_entities or []) if str(e).strip()]
+        if not cleaned:
+            return []
+
+        qfilter = build_qdrant_filter(
+            doc_ids=doc_ids,
+            file_types=file_types,
+            domains=domains,
+            subdomains=subdomains,
+            max_authority_tier=max_authority_tier,
+            only_current=only_current,
+            associated_entities=cleaned,
+        )
+        try:
+            points, _ = await self.qdrant.scroll(
+                collection_name=self.collection,
+                scroll_filter=qfilter,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
+            return list(points or [])
+        except Exception as exc:
+            logger.debug("Exact-entity scroll failed on collection '%s': %s", self.collection, exc)
+            return []
+
+    async def fetch_document_legends(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        """Fetch document-level legend/notes chunks (`record_type='document_legend_notes'`) for given docs."""
+        cleaned_doc_ids = list(dict.fromkeys(str(d).strip() for d in (doc_ids or []) if str(d).strip()))
+        if not cleaned_doc_ids:
+            return []
+
+        if not await self.qdrant.collection_exists(self.collection):
+            return []
+
+        doc_match: models.Match = (
+            models.MatchValue(value=cleaned_doc_ids[0])
+            if len(cleaned_doc_ids) == 1
+            else models.MatchAny(any=cleaned_doc_ids)
+        )
+        qfilter = models.Filter(
+            must=[
+                models.FieldCondition(key="doc_id", match=doc_match),
+                models.FieldCondition(
+                    key="record_type",
+                    match=models.MatchValue(value="document_legend_notes"),
+                ),
+            ]
+        )
+        try:
+            points, _ = await self.qdrant.scroll(
+                collection_name=self.collection,
+                scroll_filter=qfilter,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as exc:
+            logger.debug("Legend scroll failed on collection '%s': %s", self.collection, exc)
+            return []
+
+        legend_candidates: list[dict[str, Any]] = []
+        for point in points or []:
+            payload = dict(point.payload or {})
+            cand = _point_payload_to_candidate(
+                point.id,
+                payload,
+                score=0.72,
+                fallback_domain=str(payload.get("domain") or "general"),
+            )
+            cand["is_legend_context"] = True
+            cand["record_type"] = "document_legend_notes"
+            legend_candidates.append(cand)
+        return legend_candidates
+
     async def retrieve(
         self,
         queries: str | Sequence[str],
         *,
         doc_ids: Sequence[str] | None = None,
         file_types: Sequence[str] | None = None,
+        associated_entities: Sequence[str] | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """Embed query/queries and execute hybrid RRF retrieval against Qdrant.
@@ -265,14 +463,10 @@ class HybridRetriever:
             return []
 
         top_limit = limit or self.limit
-        if isinstance(self.sparse_encoder, BgeM3SparseEncoder) and getattr(
-            self.embedder, "supports_native_sparse", False
-        ):
-            dense_vectors, sparse_vectors = await self.embedder.embed_documents_with_sparse(query_list)
-        else:
-            dense_vectors = await self.embedder.embed_documents(query_list)
-            sparse_vectors = await self.sparse_encoder.encode(query_list)
+        dense_vectors, sparse_vectors = await self._encode_queries(query_list)
 
+        cleaned_entities = [str(e).strip() for e in (associated_entities or []) if str(e).strip()]
+        cleaned_entities_lower = {e.lower() for e in cleaned_entities}
         merged_by_chunk: dict[str, dict[str, Any]] = {}
 
         for dense_vec, sparse_vec in zip(dense_vectors, sparse_vectors):
@@ -287,37 +481,31 @@ class HybridRetriever:
             response = await self.qdrant.query_points(**query_kwargs)
             for point in response.points:
                 payload = dict(point.payload or {})
-                chunk_id = str(payload.get("chunk_id") or point.id)
                 score = float(point.score or 0.0)
-                page_numbers = [
-                    int(p)
-                    for p in (payload.get("page_numbers") or [])
-                    if isinstance(p, (int, str)) and str(p).isdigit()
-                ]
-                candidate: dict[str, Any] = {
-                    "chunk_id": chunk_id,
-                    "point_id": str(point.id),
-                    "doc_id": str(payload.get("doc_id") or ""),
-                    "source_filename": str(payload.get("source_filename") or ""),
-                    "file_type": str(payload.get("file_type") or ""),
-                    "heading_path": str(payload.get("heading_path") or ""),
-                    "page_numbers": page_numbers,
-                    "token_count": int(payload.get("token_count") or 0),
-                    "child_text": str(payload.get("child_text") or ""),
-                    "parent_content": str(payload.get("parent_content") or payload.get("child_text") or ""),
-                    "contextual_prefix": str(payload.get("contextual_prefix") or ""),
-                    "domain": str(payload.get("domain") or "general"),
-                    "subdomain": str(payload.get("subdomain") or "general"),
-                    "epistemic_type": str(payload.get("epistemic_type") or "general"),
-                    "authority_tier": int(payload.get("authority_tier", 3)),
-                    "jurisdiction": str(payload.get("jurisdiction") or ""),
-                    "is_current": bool(payload.get("is_current", True)),
-                    "associated_entities": list(payload.get("associated_entities") or []),
-                    "score": score,
-                }
+                candidate = _point_payload_to_candidate(
+                    point.id,
+                    payload,
+                    score=score,
+                    fallback_domain="general",
+                )
+                if _chunk_matches_entities(candidate, cleaned_entities_lower):
+                    candidate["exact_tag_match"] = True
+                chunk_id = candidate["chunk_id"]
                 existing = merged_by_chunk.get(chunk_id)
                 if existing is None or score > float(existing.get("score", 0.0)):
+                    if existing is not None and existing.get("exact_tag_match"):
+                        candidate["exact_tag_match"] = True
                     merged_by_chunk[chunk_id] = candidate
+
+        if cleaned_entities:
+            supp_points = await self._scroll_exact_entity_points(
+                associated_entities=cleaned_entities,
+                doc_ids=doc_ids,
+                file_types=file_types,
+                limit=max(top_limit, 24),
+            )
+            for point in supp_points:
+                _upsert_exact_tag_candidate(merged_by_chunk, point, min_score=0.85)
 
         sorted_candidates = sorted(
             merged_by_chunk.values(),
@@ -369,15 +557,11 @@ class HybridRetriever:
         query_texts = [active_queries[d] for d in domains_to_query]
 
         # Batch-encode all sub-queries in a single call
-        if isinstance(self.sparse_encoder, BgeM3SparseEncoder) and getattr(
-            self.embedder, "supports_native_sparse", False
-        ):
-            dense_vectors, sparse_vectors = await self.embedder.embed_documents_with_sparse(query_texts)
-        else:
-            dense_vectors = await self.embedder.embed_documents(query_texts)
-            sparse_vectors = await self.sparse_encoder.encode(query_texts)
+        dense_vectors, sparse_vectors = await self._encode_queries(query_texts)
 
-        # Isolated per-domain Qdrant searches in parallel via asyncio.gather
+        # Isolated per-domain Qdrant searches in parallel via asyncio.gather.
+        # Primary RRF MUST NOT hard-filter by associated_entities so non-tagged
+        # contextual chunks and Legend/Notes pages remain retrievable.
         async def _search_single_domain(
             dom: str,
             d_vec: list[float],
@@ -394,7 +578,7 @@ class HybridRetriever:
                 subdomains=subdomains,
                 max_authority_tier=max_authority_tier,
                 only_current=only_current,
-                associated_entities=associated_entities,
+                associated_entities=None,
             )
             resp = await self.qdrant.query_points(**kwargs)
             return dom, list(resp.points)
@@ -406,7 +590,8 @@ class HybridRetriever:
         results = await asyncio.gather(*tasks)
 
         weights = dict(domain_weights or {})
-        cleaned_entities = {str(e).strip().lower() for e in (associated_entities or []) if str(e).strip()}
+        raw_cleaned_entities = [str(e).strip() for e in (associated_entities or []) if str(e).strip()]
+        cleaned_entities_lower = {e.lower() for e in raw_cleaned_entities}
 
         candidates_by_id: dict[str, dict[str, Any]] = {}
         rrf_scores_by_id: dict[str, float] = {}
@@ -420,81 +605,83 @@ class HybridRetriever:
             for rank_0, point in enumerate(points):
                 rank = rank_0 + 1
                 payload = dict(point.payload or {})
-                chunk_id = str(payload.get("chunk_id") or point.id)
-
-                # Entity match check
-                chunk_entities = {
-                    str(e).strip().lower()
-                    for e in (payload.get("associated_entities") or [])
-                    if str(e).strip()
-                }
-                child_text = str(payload.get("child_text") or "")
-                parent_content = str(payload.get("parent_content") or child_text)
-                has_entity_match = False
-                if cleaned_entities:
-                    if chunk_entities & cleaned_entities:
-                        has_entity_match = True
-                    elif any(e in child_text.lower() or e in parent_content.lower() for e in cleaned_entities):
-                        has_entity_match = True
+                candidate = _point_payload_to_candidate(
+                    point.id,
+                    payload,
+                    score=0.0,
+                    fallback_domain=dom,
+                )
+                chunk_id = candidate["chunk_id"]
+                has_entity_match = _chunk_matches_entities(candidate, cleaned_entities_lower)
 
                 # Calibrated RRF contribution
                 rrf_contrib = dom_weight / (float(rrf_k) + float(rank))
                 if has_entity_match:
-                    rrf_contrib += (1.0 / float(rrf_k))  # Entity-match rank bonus
+                    rrf_contrib += 1.0 / float(rrf_k)  # Entity-match rank bonus
 
                 rrf_scores_by_id[chunk_id] = rrf_scores_by_id.get(chunk_id, 0.0) + rrf_contrib
 
-                page_numbers = [
-                    int(p)
-                    for p in (payload.get("page_numbers") or [])
-                    if isinstance(p, (int, str)) and str(p).isdigit()
-                ]
-                candidate: dict[str, Any] = {
-                    "chunk_id": chunk_id,
-                    "point_id": str(point.id),
-                    "doc_id": str(payload.get("doc_id") or ""),
-                    "source_filename": str(payload.get("source_filename") or ""),
-                    "file_type": str(payload.get("file_type") or ""),
-                    "heading_path": str(payload.get("heading_path") or ""),
-                    "page_numbers": page_numbers,
-                    "token_count": int(payload.get("token_count") or 0),
-                    "child_text": child_text,
-                    "parent_content": parent_content,
-                    "contextual_prefix": str(payload.get("contextual_prefix") or ""),
-                    "domain": str(payload.get("domain") or dom),
-                    "subdomain": str(payload.get("subdomain") or "general"),
-                    "epistemic_type": str(payload.get("epistemic_type") or "general"),
-                    "authority_tier": int(payload.get("authority_tier", 3)),
-                    "jurisdiction": str(payload.get("jurisdiction") or ""),
-                    "is_current": bool(payload.get("is_current", True)),
-                    "associated_entities": list(payload.get("associated_entities") or []),
-                    "score": 0.0,
-                }
-                candidates_by_id[chunk_id] = candidate
-                domain_chunk_lists[dom].append(candidate)
+                target = candidates_by_id.setdefault(chunk_id, candidate)
+                if has_entity_match:
+                    target["exact_tag_match"] = True
+                domain_chunk_lists[dom].append(target)
+
+        guaranteed_ids: set[str] = set()
+
+        # Supplementary exact-entity pre-fetch ensures exact tag matches surface even if
+        # crowded out of dense/sparse semantic top_limit by similar prose.
+        if raw_cleaned_entities:
+            scroll_limit = max(top_limit, 24)
+            supp_points = await self._scroll_exact_entity_points(
+                associated_entities=raw_cleaned_entities,
+                doc_ids=doc_ids,
+                file_types=file_types,
+                domains=domains_to_query,
+                subdomains=subdomains,
+                max_authority_tier=max_authority_tier,
+                only_current=only_current,
+                limit=scroll_limit,
+            )
+            if not supp_points and mode != "explicit":
+                supp_points = await self._scroll_exact_entity_points(
+                    associated_entities=raw_cleaned_entities,
+                    doc_ids=doc_ids,
+                    file_types=file_types,
+                    domains=None,
+                    subdomains=subdomains,
+                    max_authority_tier=max_authority_tier,
+                    only_current=only_current,
+                    limit=scroll_limit,
+                )
+
+            for point in supp_points:
+                chunk_id = _upsert_exact_tag_candidate(candidates_by_id, point)
+                rrf_scores_by_id[chunk_id] = rrf_scores_by_id.get(chunk_id, 0.0) + (2.0 / float(rrf_k))
+                guaranteed_ids.add(chunk_id)
 
         # Assign final RRF scores to all candidates
         for c_id, score in rrf_scores_by_id.items():
-            candidates_by_id[c_id]["score"] = round(score, 6)
+            if c_id in candidates_by_id:
+                candidates_by_id[c_id]["score"] = round(score, 6)
 
         # Stratified Per-Domain Quotas:
         # Guarantee min_per_domain chunks from each active domain if available
-        guaranteed_ids: set[str] = set()
         for dom, c_list in domain_chunk_lists.items():
             sorted_dom = sorted(c_list, key=lambda c: float(c.get("score", 0.0)), reverse=True)
             for c in sorted_dom[:min_per_domain]:
                 guaranteed_ids.add(c["chunk_id"])
 
         selected_candidates: list[dict[str, Any]] = [candidates_by_id[cid] for cid in guaranteed_ids]
+        effective_limit = max(top_limit, len(guaranteed_ids))
 
-        # Fill remaining capacity up to top_limit by highest RRF score
+        # Fill remaining capacity up to effective_limit by highest RRF score
         remaining = [c for cid, c in candidates_by_id.items() if cid not in guaranteed_ids]
         remaining.sort(key=lambda c: float(c.get("score", 0.0)), reverse=True)
 
-        slots_left = max(0, top_limit - len(selected_candidates))
+        slots_left = max(0, effective_limit - len(selected_candidates))
         selected_candidates.extend(remaining[:slots_left])
 
         # Final sort by descending RRF score
         selected_candidates.sort(key=lambda c: float(c.get("score", 0.0)), reverse=True)
-        return selected_candidates[:top_limit]
+        return selected_candidates[:effective_limit]
 

@@ -1,6 +1,7 @@
 """7-node LangGraph Corrective RAG (CRAG) conversational engine with AsyncSqliteSaver."""
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -32,6 +33,7 @@ from src.ingestion.classifier import (
     get_taxonomy_catalog,
     refresh_taxonomy_catalog,
 )
+from src.ingestion.entity_extractor import EntityExtractor
 from src.ingestion.indexer import BaseEmbedder, SparseEncoder
 from src.rag.grader import ContextGrader, format_documents_xml
 from src.rag.llm import (
@@ -239,6 +241,47 @@ def _route_after_grade(state: AgentState) -> Literal["synthesize", "fallback_not
     return "fallback_notice"
 
 
+_MATRIX_TRACE_INTENT_RE = re.compile(
+    r"(?:\bcauses?\b|\beffects?\b|\btrigger(?:s|ed|ing)?\b|\binterlock(?:s|ed|ing)?\b|"
+    r"\btrip(?:s|ped|ping)?\b|\bshutdowns?\b|\besd\b|\bmatrices\b|\bmatrix\b|"
+    r"(?<!\w)c\s*&\s*e(?!\w)|\bvoting\b|\b2oo3\b|\b2\s+out\s+of\s+3\b|"
+    r"\bactuate(?:s|d|ing)?\b|\bnguyen\s+nhan\b|\bnguyên\s+nhân\b|"
+    r"\bket\s+qua\b|\bkết\s+quả\b|\blien\s+dong\b|\bliên\s+động\b)",
+    flags=re.IGNORECASE,
+)
+
+_ENUM_WIRING_INTENT_RE = re.compile(
+    r"(?:\blist\s+all\b|\ball\s+terminals?\b|\ball\s+causes?\b|\ball\s+effects?\b|"
+    r"\bwiring\b|\bterminals?\b|\bcabinets?\b|\bio\s+list\b|(?<!\w)i/o(?!\w)|"
+    r"\bchannels?\b|\bmodules?\b|\bschedules?\b|"
+    r"\btat\s+ca\b|\btất\s+cả\b|\bliet\s+ke\b|\bliệt\s+kê\b|\bdau\s+noi\b|\bđấu\s+nối\b)",
+    flags=re.IGNORECASE,
+)
+
+
+def _detect_engineering_query_intent(
+    query: str,
+    extracted_tags: Sequence[str],
+) -> tuple[str, int | None]:
+    """Classify query intent and return `(query_intent, engineering_top_n)`."""
+    text = (query or "").strip()
+    if _MATRIX_TRACE_INTENT_RE.search(text):
+        return "matrix_trace", 12
+    if _ENUM_WIRING_INTENT_RE.search(text):
+        return "enumeration", 12
+    if extracted_tags:
+        return "tag_lookup", 12
+    return "prose", None
+
+
+def _accepts_kwarg(fn: Any, name: str) -> bool:
+    """Return True if callable `fn` declares parameter `name`."""
+    try:
+        return name in inspect.signature(fn).parameters
+    except Exception:
+        return False
+
+
 def build_rag_graph(
     *,
     retriever: HybridRetriever | None = None,
@@ -307,7 +350,16 @@ def build_rag_graph(
         polysemy_collisions.sort(key=lambda x: len(x["term"]), reverse=True)
         polysemy_collisions = polysemy_collisions[:5]
 
-        matched_entities = [e.canonical_name for e in entity_matches if getattr(e, "canonical_name", None)]
+        db_matched_entities = [e.canonical_name for e in entity_matches if getattr(e, "canonical_name", None)]
+        eng_tags = EntityExtractor().extract_query_tags_and_stems(original_query)
+        matched_entities = list(
+            dict.fromkeys(
+                clean_ent
+                for clean_ent in (str(ent).strip() for ent in (*eng_tags, *db_matched_entities))
+                if clean_ent
+            )
+        )
+        query_intent, engineering_top_n = _detect_engineering_query_intent(original_query, eng_tags)
 
         # Step 2: Query intent pre-scoring via Laya classifier (<20ms target, fallback to stub without slow network)
         primary_domain = "general"
@@ -452,6 +504,8 @@ def build_rag_graph(
             "target_domains": target_domains,
             "domain_queries": domain_queries,
             "polysemy_collisions": polysemy_collisions,
+            "query_intent": query_intent,
+            "engineering_top_n": engineering_top_n,
         }
         steps = list(state.get("steps") or []) + [step_record]
 
@@ -465,6 +519,8 @@ def build_rag_graph(
             "domain_weights": domain_weights,
             "polysemy_collisions": polysemy_collisions,
             "matched_entities": matched_entities,
+            "query_intent": query_intent,
+            "engineering_top_n": engineering_top_n,
             "steps": steps,
         }
 
@@ -516,6 +572,7 @@ def build_rag_graph(
         subdomains = domain_filter.get("subdomains")
         max_authority_tier = domain_filter.get("max_authority_tier")
         only_current = domain_filter.get("only_current", True)
+        matched_entities = state.get("matched_entities")
 
         if domain_queries and hasattr(active_retriever, "retrieve_federated"):
             candidates = await active_retriever.retrieve_federated(
@@ -526,7 +583,7 @@ def build_rag_graph(
                 subdomains=subdomains,
                 max_authority_tier=max_authority_tier,
                 only_current=only_current,
-                associated_entities=state.get("matched_entities"),
+                associated_entities=matched_entities,
             )
         else:
             queries = list(state.get("rewritten_queries") or [])
@@ -534,10 +591,52 @@ def build_rag_graph(
                 orig = str(state.get("original_query") or "").strip()
                 if orig:
                     queries = [orig]
-            candidates = await active_retriever.retrieve(
-                queries=queries,
-                doc_ids=filter_doc_ids,
+            retrieve_kwargs: dict[str, Any] = {
+                "queries": queries,
+                "doc_ids": filter_doc_ids,
+            }
+            if _accepts_kwarg(active_retriever.retrieve, "associated_entities"):
+                retrieve_kwargs["associated_entities"] = matched_entities
+            candidates = await active_retriever.retrieve(**retrieve_kwargs)
+
+        candidates = [dict(c) for c in (candidates or [])]
+
+        if (
+            state.get("query_intent", "prose") != "prose"
+            and candidates
+            and hasattr(active_retriever, "fetch_document_legends")
+        ):
+            doc_ids_for_legends = list(
+                dict.fromkeys(
+                    d_id
+                    for d_id in (str(cand.get("doc_id") or "").strip() for cand in candidates)
+                    if d_id
+                )
             )
+            if doc_ids_for_legends:
+                try:
+                    legend_chunks = await active_retriever.fetch_document_legends(doc_ids_for_legends)
+                except Exception as exc:
+                    logger.debug("[CRAG-RETRIEVE] Legend context fetch skipped or failed: %s", exc)
+                    legend_chunks = []
+
+                by_chunk_id: dict[str, dict[str, Any]] = {
+                    str(c.get("chunk_id") or ""): c
+                    for c in candidates
+                    if c.get("chunk_id")
+                }
+                for leg in legend_chunks or []:
+                    if not isinstance(leg, dict):
+                        continue
+                    leg_id = str(leg.get("chunk_id") or "")
+                    if leg_id and leg_id in by_chunk_id:
+                        by_chunk_id[leg_id]["is_legend_context"] = True
+                    else:
+                        leg_copy = dict(leg)
+                        leg_copy["is_legend_context"] = True
+                        candidates.append(leg_copy)
+                        if leg_id:
+                            by_chunk_id[leg_id] = leg_copy
 
         step_record = {
             "node": "retrieve",
@@ -560,10 +659,14 @@ def build_rag_graph(
                 "reranked_chunks": [],
                 "steps": list(state.get("steps") or []),
             }
-        reranked = await active_reranker.rerank(
-            query=original_query,
-            candidates=candidates,
-        )
+        rerank_kwargs: dict[str, Any] = {
+            "query": original_query,
+            "candidates": candidates,
+        }
+        eng_top_n = state.get("engineering_top_n")
+        if eng_top_n is not None and _accepts_kwarg(active_reranker.rerank, "top_n"):
+            rerank_kwargs["top_n"] = eng_top_n
+        reranked = await active_reranker.rerank(**rerank_kwargs)
         step_record = {
             "node": "rerank",
             "label": NODE_STEP_LABELS["rerank"],

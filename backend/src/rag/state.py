@@ -111,4 +111,6 @@ class AgentState(TypedDict, total=False):
     domain_queries: dict[str, str]
     polysemy_collisions: list[dict[str, Any]]
     matched_entities: list[str]
+    query_intent: str
+    engineering_top_n: int | None
 
