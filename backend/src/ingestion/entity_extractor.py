@@ -51,11 +51,59 @@ ENTITY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:Điều\s+\d+\s+Khoản\s+\d+|Section\s+\d+\s+Subsection\s+\([a-z0-9]+\))\b",
         re.IGNORECASE,
     ),
+    # Universal industrial tags (case-sensitive uppercase to avoid matching prose words)
+    "dcs_loop_tag": re.compile(
+        r"\b(?:TI|PI|FI|LI|AI|AO|DI|DO|FIC|PIC|LIC|TIC|PIA|LIA|HIC|TIA|FIA|XV|FCV|PCV|HCV|PSHH|PALL|PAHH|LAHH|PDALL|UZA|UZ|ZI|VI|XI)\d{3,6}[A-Z]?\b"
+    ),
+    "esd_fgs_signal": re.compile(
+        r"\b(?:HZ|UA|UZ|UZA|RSESD|LTRCV|LTFCS|MAIN)(?=[-_A-Z0-9]*\d)[-_A-Z0-9]{2,20}\b"
+    ),
+    "cabinet_io_id": re.compile(
+        r"\b(?:LNG-[A-Z0-9-]+|FCS\d{4}|SCS\d{4}|AAI\d{3}-[A-Z]|AAV\d{3}-[A-Z]|ADV\d{3}-[A-Z]|A[IO]\.[A-Z]\.[A-Z]|\d[FR]TB\d+|FS\d{2}|RS\d{2}|MCC-\d{3}[A-Z]?|CB-\d{2,4})\b"
+    ),
+    "isa_instrument_tag": re.compile(
+        r"\b[A-Z]{2,6}-\d{3,6}[A-Z]?(?:/[A-Z0-9]+)*\b"
+    ),
 }
+
+INDUSTRIAL_TAG_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "equipment_tag",
+        "isa_instrument_tag",
+        "dcs_loop_tag",
+        "esd_fgs_signal",
+        "cabinet_io_id",
+    }
+)
+
+_LOGIC_SUFFIX_RE = re.compile(r"(?:_R\d+|_\d{2})$")
+_COMPACT_TAG_RE = re.compile(r"^([A-Z]{2,6})(\d{3,6}[A-Z]?)$")
+_HYPHENATE_PREFIXES: frozenset[str] = frozenset({"HZ", "UA", "UZ", "XV", "TT", "PT", "FT", "LT"})
+_VOTING_CHANNEL_RE = re.compile(r"^([A-Z]{2,6}-\d{3,6})(?!\d)([A-Z0-9]+(?:/[A-Z0-9]+)+)$")
+_ISA_LOOP_PREFIXES: frozenset[str] = frozenset(
+    {
+        "TT", "TI", "TIC", "TIA", "TE", "TX",
+        "FT", "FI", "FIC", "FIA", "FE",
+        "PT", "PI", "PIC", "PIA", "PE",
+        "LT", "LI", "LIC", "LIA", "LE",
+        "ZT", "ZI",
+        "VT", "VI",
+        "XT", "XI",
+        "AT", "AI", "AIC",
+        "PD", "PDT", "PDI",
+        "XV", "FCV", "PCV", "HCV",
+    }
+)
+_ISA_LOOP_RE = re.compile(r"^([A-Z]{2,4})-?(\d{4,6})([A-Z]?)$")
+_LOOP_STEM_RE = re.compile(r"^LOOP-\d{4,6}[A-Z]?$")
 
 # Role mapping based on entity category
 ENTITY_ROLE_MAP: dict[str, str] = {
     "equipment_tag": "physical_spec",
+    "isa_instrument_tag": "physical_spec",
+    "dcs_loop_tag": "control_loop_ref",
+    "esd_fgs_signal": "safety_interlock_ref",
+    "cabinet_io_id": "cabinet_io_ref",
     "intl_engineering_standard": "engineering_standard_ref",
     "vn_engineering_standard": "vn_engineering_standard_ref",
     "intl_accounting_standard": "accounting_standard_ref",
@@ -68,6 +116,10 @@ ENTITY_ROLE_MAP: dict[str, str] = {
 
 ENTITY_TYPE_MAP: dict[str, str] = {
     "equipment_tag": "equipment",
+    "isa_instrument_tag": "instrument",
+    "dcs_loop_tag": "dcs_tag",
+    "esd_fgs_signal": "safety_signal",
+    "cabinet_io_id": "hardware_io",
     "intl_engineering_standard": "standard",
     "vn_engineering_standard": "standard",
     "intl_accounting_standard": "accounting_standard",
@@ -77,6 +129,92 @@ ENTITY_TYPE_MAP: dict[str, str] = {
     "clause_citation": "clause",
     "gazetteer_entity": "catalog_entity",
 }
+
+
+def _append_unique(target: list[str], seen: set[str], value: str) -> None:
+    if value and value not in seen:
+        seen.add(value)
+        target.append(value)
+
+
+def expand_engineering_tag_stems(
+    tags: Sequence[str],
+    *,
+    max_stems_per_tag: int = 8,
+) -> list[str]:
+    """Expand industrial tags into normalized stems, split voting channels, and ISA loop links."""
+    if not tags or max_stems_per_tag <= 0:
+        return []
+
+    all_stems: set[str] = set()
+    for raw_tag in tags:
+        norm = re.sub(r"\s+", " ", raw_tag.strip()).upper()
+        if not norm:
+            continue
+
+        per_tag: list[str] = []
+        local_seen: set[str] = set()
+
+        # 1. Exact normalized uppercase tag
+        _append_unique(per_tag, local_seen, norm)
+
+        # 2. Strip trailing _R\d+ or _\d{2} logic suffix
+        base = _LOGIC_SUFFIX_RE.sub("", norm) or norm
+
+        # 5. Split multi-channel voting tags before capping (priority after original)
+        split_channels: list[str] = []
+        voting_match = _VOTING_CHANNEL_RE.match(base)
+        if voting_match:
+            stem_prefix, channels_part = voting_match.groups()
+            for ch in channels_part.split("/"):
+                if ch:
+                    ch_tag = f"{stem_prefix}{ch}"
+                    split_channels.append(ch_tag)
+                    _append_unique(per_tag, local_seen, ch_tag)
+            _append_unique(per_tag, local_seen, stem_prefix)
+            _append_unique(per_tag, local_seen, re.sub(r"[-_]", "", stem_prefix))
+
+        # 3. Stripped base & compact alphanumeric stem
+        if base != norm:
+            _append_unique(per_tag, local_seen, base)
+        if not voting_match:
+            compact = re.sub(r"[-_]", "", base)
+            if compact != base:
+                _append_unique(per_tag, local_seen, compact)
+
+        # 4. Hyphenated form for compact prefix+digits tags
+        compact_match = _COMPACT_TAG_RE.match(base)
+        if compact_match:
+            prefix, rest = compact_match.groups()
+            if prefix in _HYPHENATE_PREFIXES:
+                _append_unique(per_tag, local_seen, f"{prefix}-{rest}")
+
+        # 6. Cross-link ISA loop number stems
+        for candidate in (base, *split_channels):
+            loop_match = _ISA_LOOP_RE.match(candidate)
+            if loop_match:
+                prefix, digits, channel = loop_match.groups()
+                if prefix in _ISA_LOOP_PREFIXES:
+                    _append_unique(per_tag, local_seen, f"LOOP-{digits}{channel}")
+                    if channel:
+                        _append_unique(per_tag, local_seen, f"LOOP-{digits}")
+
+        all_stems.update(per_tag[:max_stems_per_tag])
+
+    return sorted(all_stems)
+
+
+def _classify_entity_name(clean_name: str) -> tuple[str, str]:
+    """Resolve (entity_type, role_in_domain) for a canonical entity or stemmed tag."""
+    if _LOOP_STEM_RE.match(clean_name):
+        return "control_loop", "control_loop_ref"
+    for cat_name, pat in ENTITY_PATTERNS.items():
+        if pat.search(clean_name):
+            return (
+                ENTITY_TYPE_MAP.get(cat_name, "general"),
+                ENTITY_ROLE_MAP.get(cat_name, "entity_mention"),
+            )
+    return "general", "entity_mention"
 
 
 class EntityExtractor:
@@ -109,19 +247,27 @@ class EntityExtractor:
         return cls(gazetteer_terms=sorted(terms))
 
     def extract_entities(self, text: str, domain_key: Optional[str] = None) -> list[str]:
-        """Extract all unique entity citations and tags from text in deterministic order."""
+        """Extract all unique entity citations, tags, and canonical stems from text in deterministic order."""
         if not text:
             return []
 
         found: set[str] = set()
+        industrial_tags: list[str] = []
 
         # Deterministic regex matching across all categories
         for cat_name, pattern in ENTITY_PATTERNS.items():
             matches = pattern.findall(text)
             for m in matches:
                 clean_m = re.sub(r"\s+", " ", m.strip())
-                if clean_m:
+                if not clean_m:
+                    continue
+                if cat_name in INDUSTRIAL_TAG_CATEGORIES:
+                    industrial_tags.append(clean_m)
+                else:
                     found.add(clean_m)
+
+        if industrial_tags:
+            found.update(expand_engineering_tag_stems(industrial_tags))
 
         # Gazetteer matching
         if self._gazetteer_re:
@@ -129,6 +275,34 @@ class EntityExtractor:
                 found.add(g_match.group(1).strip())
 
         return sorted(found)
+
+    def extract_query_tags_and_stems(self, query: str) -> list[str]:
+        """Extract industrial tags and expanded stems from a user query without matching prose."""
+        if not query:
+            return []
+
+        raw_tags: list[str] = []
+        seen_raw: set[str] = set()
+        candidate_texts = [query]
+
+        # Uppercase only tokens containing a digit so lowercase tag queries still match case-sensitive patterns
+        upper_digit_query = " ".join(
+            tok.upper() if any(ch.isdigit() for ch in tok) else tok
+            for tok in query.split()
+        )
+        if upper_digit_query != query:
+            candidate_texts.append(upper_digit_query)
+
+        for candidate_text in candidate_texts:
+            for cat_name in INDUSTRIAL_TAG_CATEGORIES:
+                pattern = ENTITY_PATTERNS[cat_name]
+                for m in pattern.findall(candidate_text):
+                    clean_m = re.sub(r"\s+", " ", m.strip())
+                    if clean_m and clean_m not in seen_raw:
+                        seen_raw.add(clean_m)
+                        raw_tags.append(clean_m)
+
+        return expand_engineering_tag_stems(raw_tags)
 
     def extract_typed_entities(self, text: str) -> list[dict[str, str]]:
         """Extract entities with category and default role metadata."""
@@ -184,6 +358,7 @@ async def sync_chunk_entities_to_db(
         if not ent_name or len(ent_name.strip()) < 2:
             continue
         clean_name = ent_name.strip()
+        entity_type, role = _classify_entity_name(clean_name)
 
         # Find or create CrossDomainEntity
         stmt = select(CrossDomainEntity).where(CrossDomainEntity.canonical_name == clean_name)
@@ -191,13 +366,6 @@ async def sync_chunk_entities_to_db(
         entity_obj = res.scalars().first()
 
         if entity_obj is None:
-            # Determine entity type
-            entity_type = "general"
-            for cat_name, pat in ENTITY_PATTERNS.items():
-                if pat.search(clean_name):
-                    entity_type = ENTITY_TYPE_MAP.get(cat_name, "general")
-                    break
-
             entity_obj = CrossDomainEntity(
                 canonical_name=clean_name,
                 entity_type=entity_type,
@@ -215,12 +383,6 @@ async def sync_chunk_entities_to_db(
         mapping_obj = map_res.scalars().first()
 
         if mapping_obj is None:
-            role = "entity_mention"
-            for cat_name, pat in ENTITY_PATTERNS.items():
-                if pat.search(clean_name):
-                    role = ENTITY_ROLE_MAP.get(cat_name, "entity_mention")
-                    break
-
             mapping_obj = EntityDomainMapping(
                 entity_id=entity_obj.id,
                 chunk_id=chunk_id,

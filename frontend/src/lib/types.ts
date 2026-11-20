@@ -80,7 +80,7 @@ export interface DocumentItem {
   duration_ms: number | null;
   stage_timings: Record<string, number>;
   duplicate: boolean;
-  parsing_engine?: "docling" | "pymupdf4llm" | string | null;
+  parsing_engine?: "docling" | "pymupdf4llm" | "engineering_cad" | string | null;
   engine_fallback_reason?: string | null;
   primary_domain_id?: string | null;
   primary_subdomain_id?: string | null;

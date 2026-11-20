@@ -32,7 +32,7 @@ from src.ingestion.classifier import (
     SectionOverride,
     get_taxonomy_catalog,
 )
-from src.ingestion.entity_extractor import EntityExtractor
+from src.ingestion.entity_extractor import EntityExtractor, expand_engineering_tag_stems
 from src.ingestion.parser import ParseResult
 
 logger = logging.getLogger(__name__)
@@ -130,6 +130,7 @@ class ChunkPayload:
     effective_year: Optional[int] = None
     contextual_prefix: Optional[str] = None
     associated_entities: list[str] = field(default_factory=list)
+    record_type: Optional[str] = None
 
 
 def format_contextual_prefix(
@@ -175,6 +176,63 @@ def format_contextualized_text(
     return f"{filename} > {clean_heading}: {child_text}"
 
 
+def _build_legend_summary(legend_ctx: dict[str, Any]) -> str:
+    """Build a concise legend summary combining symbol_map and short notes/summary."""
+    if not legend_ctx or not isinstance(legend_ctx, dict):
+        return ""
+    parts: list[str] = []
+    symbol_map = legend_ctx.get("symbol_map") or {}
+    if isinstance(symbol_map, dict) and symbol_map:
+        syms = "; ".join(f"{k} = {v}" for k, v in symbol_map.items())
+        parts.append(f"Legend Symbols: {syms}")
+
+    short_summary = str(legend_ctx.get("summary") or "").strip()
+    if short_summary:
+        parts.append(short_summary)
+    else:
+        notes_map = legend_ctx.get("notes_map") or {}
+        if isinstance(notes_map, dict) and notes_map:
+            note_items = [f"{k}: {v}" for k, v in notes_map.items()]
+            joined_notes = " | ".join(note_items)
+            if len(joined_notes) > 360:
+                kept: list[str] = []
+                total_len = 0
+                for item in note_items:
+                    if kept and total_len + len(item) + 3 > 340:
+                        break
+                    kept.append(item)
+                    total_len += len(item) + 3
+                remaining = len(note_items) - len(kept)
+                suffix = f" (+{remaining} more notes)" if remaining > 0 else ""
+                joined_notes = " | ".join(kept) + suffix
+            parts.append(f"Legend Notes: {joined_notes}")
+
+    if not parts:
+        raw_text = str(legend_ctx.get("raw_text") or "").strip()
+        if raw_text:
+            parts.append(raw_text[:280].strip())
+
+    return "\n".join(parts).strip()
+
+
+def _parse_markdown_pages(markdown: str) -> dict[int, str]:
+    """Split <!-- page: N --> annotated markdown into per-page raw text."""
+    if not markdown:
+        return {}
+    matches = list(_PAGE_COMMENT_RE.finditer(markdown))
+    if not matches:
+        return {}
+    pages: dict[int, str] = {}
+    for idx, m in enumerate(matches):
+        pno = int(m.group(1))
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(markdown)
+        chunk = markdown[start:end].strip()
+        if chunk:
+            pages[pno] = f"{pages[pno]}\n\n{chunk}".strip() if pno in pages else chunk
+    return pages
+
+
 class HierarchicalChunker:
     """Builds parent-child chunk hierarchies with domain-specific boundary preservation."""
 
@@ -203,6 +261,16 @@ class HierarchicalChunker:
         file_type = parse_result.file_type.lower().lstrip(".")
         filename = parse_result.filename
         sha256 = parse_result.sha256 or hashlib.sha256((parse_result.markdown or "").encode("utf-8")).hexdigest()
+
+        extra_meta = parse_result.extra_meta or {}
+        if extra_meta.get("has_engineering_records") and extra_meta.get("engineering_profile"):
+            eng_chunks = self._chunk_engineering_records(
+                parse_result,
+                extra_meta=extra_meta,
+                domain_profile=domain_profile,
+            )
+            if eng_chunks:
+                return eng_chunks
 
         # If DoclingDocument model validation works and HybridChunker is available, use it
         if file_type != "xlsx" and parse_result.docling_dict and HybridChunker is not None:
@@ -347,26 +415,8 @@ class HierarchicalChunker:
             if not cleaned_sec_text:
                 continue
 
-            # Determine effective domain for section
-            override = self._match_section_override(
-                heading_path,
-                domain_profile.section_overrides if domain_profile else [],
-            )
-            sec_domain = (
-                override.domain
-                if override
-                else (domain_profile.primary_domain if domain_profile else "general")
-            )
-
-            # Resolve chunking strategy: override -> profile -> catalog fallback
-            if override and getattr(override, "chunking_strategy", None) and override.chunking_strategy != "standard_markdown":
-                sec_strategy = override.chunking_strategy
-            elif override:
-                sec_strategy = get_taxonomy_catalog().get_chunking_strategy(override.domain)
-            elif domain_profile and getattr(domain_profile, "chunking_strategy", None) and domain_profile.chunking_strategy != "standard_markdown":
-                sec_strategy = domain_profile.chunking_strategy
-            else:
-                sec_strategy = get_taxonomy_catalog().get_chunking_strategy(sec_domain)
+            # Determine effective domain & chunking strategy for section
+            sec_domain, sec_strategy = self._resolve_section_strategy(heading_path, domain_profile)
 
             # Check for economics currency/period banner
             banner_match = _ECON_BANNER_RE.search(cleaned_sec_text)
@@ -592,6 +642,440 @@ class HierarchicalChunker:
                         final_parts.append(chunk_str)
         return final_parts
 
+    def _resolve_section_strategy(
+        self,
+        heading_path: str,
+        domain_profile: Optional[RecommendedDomainProfile],
+    ) -> tuple[str, str]:
+        """Resolve (domain_key, chunking_strategy) for a heading path."""
+        override = self._match_section_override(
+            heading_path,
+            domain_profile.section_overrides if domain_profile else [],
+        )
+        sec_domain = (
+            override.domain
+            if override
+            else (domain_profile.primary_domain if domain_profile else "general")
+        )
+        if override and getattr(override, "chunking_strategy", None) and override.chunking_strategy != "standard_markdown":
+            sec_strategy = override.chunking_strategy
+        elif override:
+            sec_strategy = get_taxonomy_catalog().get_chunking_strategy(override.domain)
+        elif domain_profile and getattr(domain_profile, "chunking_strategy", None) and domain_profile.chunking_strategy != "standard_markdown":
+            sec_strategy = domain_profile.chunking_strategy
+        else:
+            sec_strategy = get_taxonomy_catalog().get_chunking_strategy(sec_domain)
+        return sec_domain, sec_strategy
+
+    def _pack_pieces_by_tokens(
+        self,
+        pieces: Sequence[str],
+        sep: str,
+        max_tokens: int,
+    ) -> list[str]:
+        """Greedily pack text pieces joined by `sep` within a `max_tokens` budget."""
+        packed: list[str] = []
+        current: list[str] = []
+        for piece in pieces:
+            candidate = sep.join([*current, piece])
+            if current and self.count_tokens(candidate) > max_tokens:
+                packed.append(sep.join(current))
+                current = [piece]
+            else:
+                current.append(piece)
+        if current:
+            packed.append(sep.join(current))
+        return packed
+
+    def _split_lines_with_repeated_header(
+        self,
+        text: str,
+        *,
+        header_line: str,
+        max_tokens: int,
+    ) -> list[str]:
+        """Split multi-line text only when exceeding max_tokens, repeating header_line on each slice."""
+        clean = text.strip()
+        if not clean:
+            return []
+        if self.count_tokens(clean) <= max_tokens:
+            return [clean]
+
+        header = header_line.strip()
+        header_tokens = self.count_tokens(header) if header else 0
+        body_budget = max(16, max_tokens - header_tokens)
+
+        segments: list[str] = []
+        for raw_line in clean.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if self.count_tokens(line) <= body_budget:
+                segments.append(line)
+                continue
+            # Split long single lines cleanly on semicolon clauses before word splitting
+            semi_parts = [p.strip() for p in line.split("; ") if p.strip()]
+            long_parts = (
+                self._pack_pieces_by_tokens(semi_parts, "; ", body_budget)
+                if len(semi_parts) > 1
+                else [line]
+            )
+            for seg in long_parts:
+                if self.count_tokens(seg) <= body_budget:
+                    segments.append(seg)
+                else:
+                    segments.extend(self._pack_pieces_by_tokens(seg.split(), " ", body_budget))
+
+        if not segments:
+            return [clean]
+
+        slices: list[str] = []
+        cur_lines: list[str] = [header] if header else []
+        cur_tokens = header_tokens
+
+        for seg in segments:
+            if header and seg == header and cur_lines == [header]:
+                continue
+            seg_tokens = self.count_tokens(seg)
+            has_body = len(cur_lines) > (1 if header else 0)
+            if has_body and (cur_tokens + seg_tokens > max_tokens):
+                slices.append("\n".join(cur_lines))
+                cur_lines = [header] if header else []
+                cur_tokens = header_tokens
+            cur_lines.append(seg)
+            cur_tokens += seg_tokens
+
+        if len(cur_lines) > (1 if header else 0) or not slices:
+            slices.append("\n".join(cur_lines))
+
+        return slices
+
+    def _chunk_schedule_records(
+        self,
+        schedule_recs: Sequence[dict[str, Any]],
+        *,
+        pno: int,
+    ) -> list[dict[str, Any]]:
+        """Group 3-5 consecutive schedule rows per child chunk while repeating the sheet header."""
+        if not schedule_recs:
+            return []
+
+        first_meta = schedule_recs[0].get("metadata") or {}
+        sheet_title = str(
+            first_meta.get("sheet_title")
+            or first_meta.get("drawing_title")
+            or schedule_recs[0].get("title")
+            or f"Schedule (Page {pno})"
+        ).strip()
+
+        headers: list[str] = []
+        raw_headers = first_meta.get("headers")
+        if isinstance(raw_headers, (list, tuple)) and raw_headers:
+            headers = [str(h).strip() for h in raw_headers if str(h).strip()]
+        else:
+            seen_cols: set[str] = set()
+            for rec in schedule_recs:
+                cols = (rec.get("metadata") or {}).get("columns") or {}
+                if isinstance(cols, dict):
+                    for col_name in cols.keys():
+                        c_str = str(col_name).strip()
+                        if c_str and c_str not in seen_cols:
+                            seen_cols.add(c_str)
+                            headers.append(c_str)
+
+        sheet_banner = (
+            f"Schedule: {sheet_title} | Columns: {', '.join(headers)}"
+            if headers
+            else f"Schedule: {sheet_title}"
+        )
+        heading_path = f"{sheet_title} (Page {pno})"
+        target_child_tokens = min(self.child_max_tokens, 240) if self.child_max_tokens >= 180 else self.child_max_tokens
+
+        items: list[dict[str, Any]] = []
+        cur_rows: list[str] = []
+        cur_tags: list[str] = []
+        cur_start_idx = 0
+
+        def _flush_group() -> None:
+            if not cur_rows:
+                return
+            child_text = f"{sheet_banner}\n" + "\n".join(cur_rows)
+            items.append(
+                {
+                    "heading_path": heading_path,
+                    "page_numbers": [pno],
+                    "child_text": child_text,
+                    "token_count": max(1, self.count_tokens(child_text)),
+                    "record_type": "schedule_row",
+                    "parent_group_key": f"schedule_p{pno}_w{cur_start_idx // 16}",
+                    "record_tags": list(dict.fromkeys(cur_tags)),
+                }
+            )
+
+        for idx, rec in enumerate(schedule_recs):
+            row_text = str(rec.get("summary_text") or "").strip()
+            if not row_text:
+                cols = (rec.get("metadata") or {}).get("columns") or {}
+                if isinstance(cols, dict) and cols:
+                    row_text = " | ".join(f"{k}: {v}" for k, v in cols.items())
+                else:
+                    row_text = str(rec.get("title") or "").strip()
+            if not row_text:
+                continue
+
+            candidate_text = f"{sheet_banner}\n" + "\n".join([*cur_rows, row_text])
+            cand_tokens = self.count_tokens(candidate_text)
+            if cur_rows and (
+                len(cur_rows) >= 5
+                or cand_tokens > self.child_max_tokens
+                or (len(cur_rows) >= 3 and cand_tokens > target_child_tokens)
+            ):
+                _flush_group()
+                cur_rows = []
+                cur_tags = []
+                cur_start_idx = idx
+
+            if not cur_rows:
+                cur_start_idx = idx
+            cur_rows.append(row_text)
+            for tag in rec.get("tags") or []:
+                t_str = str(tag).strip()
+                if t_str:
+                    cur_tags.append(t_str)
+
+        _flush_group()
+        return items
+
+    def _chunk_engineering_records(
+        self,
+        parse_result: ParseResult,
+        *,
+        extra_meta: dict[str, Any],
+        domain_profile: Optional[RecommendedDomainProfile] = None,
+    ) -> list[ChunkPayload]:
+        """Chunk engineering CAD records directly without Docling AST flattening."""
+        file_type = parse_result.file_type.lower().lstrip(".")
+        filename = parse_result.filename
+        sha256 = parse_result.sha256 or hashlib.sha256((parse_result.markdown or "").encode("utf-8")).hexdigest()
+
+        profile = extra_meta.get("engineering_profile") or {}
+        if not isinstance(profile, dict):
+            return []
+
+        legend_ctx = profile.get("legend_context") or {}
+        legend_summary = _build_legend_summary(legend_ctx)
+        page_modes = profile.get("page_modes") or {}
+        page_text_map = _parse_markdown_pages(parse_result.markdown or "")
+
+        pages = profile.get("pages") or []
+        if not pages:
+            records_by_page: dict[int, list[dict[str, Any]]] = {}
+            for rec in profile.get("records") or []:
+                pno = int(rec.get("page_number") or 1)
+                records_by_page.setdefault(pno, []).append(rec)
+            pages = [
+                {
+                    "page_number": pno,
+                    "mode": page_modes.get(pno) or page_modes.get(str(pno)) or "",
+                    "records": recs,
+                }
+                for pno, recs in sorted(records_by_page.items())
+            ]
+
+        char_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=max(200, self.child_max_tokens * 4),
+            chunk_overlap=max(32, self.child_max_tokens // 4),
+            separators=["\n\n", "\n", " ", ""],
+        )
+
+        intermediate: list[dict[str, Any]] = []
+
+        def _make_repeated_header_items(
+            text: str,
+            *,
+            heading_path: str,
+            header_line: str,
+            pno: int,
+            record_type: str,
+            parent_group_key: str,
+            record_tags: list[str],
+            parent_preamble: str | None = None,
+        ) -> list[dict[str, Any]]:
+            built: list[dict[str, Any]] = []
+            for s in self._split_lines_with_repeated_header(
+                text,
+                header_line=header_line,
+                max_tokens=self.child_max_tokens,
+            ):
+                item: dict[str, Any] = {
+                    "heading_path": heading_path,
+                    "page_numbers": [pno],
+                    "child_text": s,
+                    "token_count": max(1, self.count_tokens(s)),
+                    "record_type": record_type,
+                    "parent_group_key": parent_group_key,
+                    "record_tags": record_tags,
+                }
+                if parent_preamble is not None:
+                    item["parent_preamble"] = parent_preamble
+                built.append(item)
+            return built
+
+        def _make_prose_items(
+            text: str,
+            *,
+            heading_path: str,
+            pno: int,
+            record_type: str,
+            parent_group_key: str,
+            record_tags: list[str] | None = None,
+        ) -> list[dict[str, Any]]:
+            sec_domain, sec_strategy = self._resolve_section_strategy(heading_path, domain_profile)
+            built: list[dict[str, Any]] = []
+            for sub in self._split_section_domain_aware(
+                text,
+                sec_domain=sec_domain,
+                sec_strategy=sec_strategy,
+                fallback_splitter=char_splitter,
+            ):
+                sub_clean = sub.strip()
+                if not sub_clean:
+                    continue
+                item: dict[str, Any] = {
+                    "heading_path": heading_path,
+                    "page_numbers": [pno],
+                    "child_text": sub_clean,
+                    "token_count": max(1, self.count_tokens(sub_clean)),
+                    "record_type": record_type,
+                    "parent_group_key": parent_group_key,
+                }
+                if record_tags is not None:
+                    item["record_tags"] = record_tags
+                built.append(item)
+            return built
+
+        for page in pages:
+            pno = int(page.get("page_number") or 1)
+            mode = str(page.get("mode") or page_modes.get(pno) or page_modes.get(str(pno)) or "").strip()
+            page_recs: list[dict[str, Any]] = list(page.get("records") or [])
+
+            if mode == "standard_prose" and not page_recs:
+                raw_prose = str(page.get("markdown") or page.get("text") or page_text_map.get(pno) or "")
+                prose_clean = _PAGE_COMMENT_RE.sub("", raw_prose).strip()
+                if prose_clean:
+                    intermediate.extend(
+                        _make_prose_items(
+                            prose_clean,
+                            heading_path=f"Document (Page {pno})",
+                            pno=pno,
+                            record_type="standard_prose",
+                            parent_group_key=f"prose_p{pno}",
+                        )
+                    )
+                continue
+
+            if mode == "document_legend_notes" and not page_recs:
+                fallback_legend = legend_summary or _PAGE_COMMENT_RE.sub("", page_text_map.get(pno) or "").strip()
+                if fallback_legend:
+                    heading_path = f"Engineering Legend & Notes (Page {pno})"
+                    intermediate.extend(
+                        _make_repeated_header_items(
+                            fallback_legend,
+                            heading_path=heading_path,
+                            header_line=heading_path,
+                            pno=pno,
+                            record_type="document_legend_notes",
+                            parent_group_key=f"legend_p{pno}",
+                            record_tags=[],
+                        )
+                    )
+                continue
+
+            idx = 0
+            while idx < len(page_recs):
+                rec = page_recs[idx]
+                rtype = str(rec.get("record_type") or mode or "").strip()
+
+                if rtype == "schedule_row":
+                    run: list[dict[str, Any]] = []
+                    while idx < len(page_recs) and str(page_recs[idx].get("record_type") or "") == "schedule_row":
+                        run.append(page_recs[idx])
+                        idx += 1
+                    intermediate.extend(self._chunk_schedule_records(run, pno=pno))
+                    continue
+
+                idx += 1
+                rec_id = str(rec.get("record_id") or f"p{pno}_rec_{idx}").strip()
+                rec_title = str(rec.get("title") or rec_id).strip()
+                rec_tags = [str(t).strip() for t in (rec.get("tags") or []) if str(t).strip()]
+                summary = str(rec.get("summary_text") or "").strip()
+
+                if rtype == "document_legend_notes" or mode == "document_legend_notes":
+                    heading_path = f"Engineering Legend & Notes (Page {pno})"
+                    text = summary or legend_summary
+                    if rec_title and rec_title not in text:
+                        text = f"{rec_title}\n{text}".strip() if text else rec_title
+                    intermediate.extend(
+                        _make_repeated_header_items(
+                            text,
+                            heading_path=heading_path,
+                            header_line=heading_path,
+                            pno=pno,
+                            record_type="document_legend_notes",
+                            parent_group_key=f"legend_p{pno}",
+                            record_tags=rec_tags,
+                        )
+                    )
+                elif rtype in ("matrix_cause_row", "matrix_effect_col"):
+                    intermediate.extend(
+                        _make_repeated_header_items(
+                            summary or rec_title,
+                            heading_path=f"Cause & Effect Matrix (Page {pno}) > {rec_title}",
+                            header_line=f"{rec_title} [{rtype}]",
+                            pno=pno,
+                            record_type=rtype,
+                            parent_group_key=f"ce_{rec_id}",
+                            record_tags=rec_tags,
+                            parent_preamble=legend_summary or None,
+                        )
+                    )
+                elif rtype in ("cad_logic_diagram", "exploded_cad_ocr"):
+                    intermediate.extend(
+                        _make_repeated_header_items(
+                            summary or rec_title,
+                            heading_path=f"{rec_title} (Page {pno})",
+                            header_line=rec_title,
+                            pno=pno,
+                            record_type=rtype,
+                            parent_group_key=f"{rtype}_{rec_id}",
+                            record_tags=rec_tags,
+                        )
+                    )
+                else:
+                    prose_text = summary or rec_title
+                    if prose_text:
+                        intermediate.extend(
+                            _make_prose_items(
+                                prose_text,
+                                heading_path=f"{rec_title} (Page {pno})",
+                                pno=pno,
+                                record_type=rtype or "standard_prose",
+                                parent_group_key=f"prose_p{pno}_{rec_id}",
+                                record_tags=rec_tags,
+                            )
+                        )
+
+        if not intermediate:
+            return []
+
+        return self._assemble_parent_child(
+            intermediate,
+            filename=filename,
+            file_type=file_type,
+            sha256=sha256,
+            domain_profile=domain_profile,
+        )
+
     def _assemble_parent_child(
         self,
         items: list[dict[str, Any]],
@@ -601,7 +1085,7 @@ class HierarchicalChunker:
         sha256: str = "",
         domain_profile: Optional[RecommendedDomainProfile] = None,
     ) -> list[ChunkPayload]:
-        """Group adjacent sibling child chunks under the same heading_path AND domain_key into parent windows."""
+        """Group adjacent sibling child chunks under the same heading_path, domain_key, parent_group_key, and record_type."""
         if not items:
             return []
 
@@ -642,14 +1126,18 @@ class HierarchicalChunker:
         while idx < n:
             group_heading = items[idx]["heading_path"]
             group_domain = items[idx]["domain_key"]
+            group_key = items[idx].get("parent_group_key")
+            group_record_type = items[idx].get("record_type")
             group: list[dict[str, Any]] = []
             running_tokens = 0
 
-            # Boundary rule: NEVER merge across different heading_path OR different domain_key
+            # Boundary rule: NEVER merge across different heading_path, domain_key, parent_group_key, or record_type
             while (
                 idx < n
                 and items[idx]["heading_path"] == group_heading
                 and items[idx]["domain_key"] == group_domain
+                and items[idx].get("parent_group_key") == group_key
+                and items[idx].get("record_type") == group_record_type
             ):
                 item_tokens = items[idx]["token_count"]
                 if group and (running_tokens + item_tokens > self.parent_max_tokens):
@@ -660,18 +1148,35 @@ class HierarchicalChunker:
 
             parent_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{sha256}:parent:{idx}:{group_domain}"))
             body_joined = "\n\n".join(g["child_text"] for g in group)
-            parent_content = (
-                f"[{filename} > {group_heading}]\n{body_joined}"
-                if not body_joined.startswith("#")
-                else body_joined
-            )
+
+            preambles: list[str] = []
+            for g in group:
+                p_txt = str(g.get("parent_preamble") or "").strip()
+                if p_txt and p_txt not in preambles and p_txt not in body_joined:
+                    preambles.append(p_txt)
+            preamble_block = "\n".join(preambles)
+
+            if preamble_block:
+                parent_content = f"[{filename} > {group_heading}]\n{preamble_block}\n\n{body_joined}"
+            else:
+                parent_content = (
+                    f"[{filename} > {group_heading}]\n{body_joined}"
+                    if not body_joined.startswith("#")
+                    else body_joined
+                )
 
             for g in group:
                 child_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{sha256}:child:{chunk_index}"))
                 child_text = g["child_text"]
 
-                # Extract entities from clean child_text
-                entities = self.entity_extractor.extract_entities(child_text, domain_key=g["domain_key"])
+                # Extract entities from clean child_text and union with expanded record_tags
+                entities_set = set(
+                    self.entity_extractor.extract_entities(child_text, domain_key=g["domain_key"])
+                )
+                record_tags = g.get("record_tags") or []
+                if record_tags:
+                    entities_set.update(expand_engineering_tag_stems(record_tags))
+                entities = sorted(entities_set)
 
                 # Determine code citation for prefix if any
                 code_citation = entities[0] if entities else None
@@ -714,6 +1219,7 @@ class HierarchicalChunker:
                         effective_year=g["effective_year"],
                         contextual_prefix=prefix,
                         associated_entities=entities,
+                        record_type=g.get("record_type"),
                     )
                 )
                 chunk_index += 1
