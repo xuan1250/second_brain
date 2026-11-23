@@ -245,7 +245,7 @@ _MATRIX_TRACE_INTENT_RE = re.compile(
     r"(?:\bcauses?\b|\beffects?\b|\btrigger(?:s|ed|ing)?\b|\binterlock(?:s|ed|ing)?\b|"
     r"\btrip(?:s|ped|ping)?\b|\bshutdowns?\b|\besd\b|\bmatrices\b|\bmatrix\b|"
     r"(?<!\w)c\s*&\s*e(?!\w)|\bvoting\b|\b2oo3\b|\b2\s+out\s+of\s+3\b|"
-    r"\bactuate(?:s|d|ing)?\b|\bnguyen\s+nhan\b|\bnguyên\s+nhân\b|"
+    r"\bactivat(?:e|es|ed|ing)\b|\bactuate(?:s|d|ing)?\b|\bnguyen\s+nhan\b|\bnguyên\s+nhân\b|"
     r"\bket\s+qua\b|\bkết\s+quả\b|\blien\s+dong\b|\bliên\s+động\b)",
     flags=re.IGNORECASE,
 )

@@ -46,6 +46,8 @@ def _apply_authority_and_tag_protection(item: dict[str, Any], s_ce: float) -> di
         s_final = max(s_final, 0.75) + 0.10
     elif bool(item.get("is_legend_context")):
         s_final = max(s_final, 0.72)
+    if bool(item.get("exact_subject_match")):
+        s_final += 0.05
 
     item["score"] = round(s_final, 6)
     return item
@@ -91,6 +93,8 @@ def deduplicate_parent_chunks(
                 existing["score"] = float(chunk["score"])
             if chunk.get("exact_tag_match"):
                 existing["exact_tag_match"] = True
+            if chunk.get("exact_subject_match"):
+                existing["exact_subject_match"] = True
             if chunk.get("is_legend_context"):
                 existing["is_legend_context"] = True
         else:

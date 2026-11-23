@@ -288,11 +288,74 @@ def _chunk_matches_entities(
     return any(e in child_lower or e in parent_lower for e in cleaned_entities_lower)
 
 
+def _is_primary_subject_match(
+    candidate: Mapping[str, Any],
+    cleaned_entities_lower: set[str],
+) -> bool:
+    """Return True when queried entity matches the primary subject header rather than an incidental body/group mention."""
+    if not cleaned_entities_lower:
+        return False
+
+    record_type = str(candidate.get("record_type") or "")
+    child_lines = str(candidate.get("child_text") or "").splitlines()
+    heading_lower = str(candidate.get("heading_path") or "").lower()
+
+    if record_type == "matrix_effect_col":
+        # Check Effect column header banner/tag/description lines (not Triggering Causes line)
+        subject_lines = "\n".join(
+            ln for ln in child_lines[:3]
+            if not ln.lstrip().lower().startswith("triggering causes")
+        ).lower()
+        subject_text = f"{heading_lower}\n{subject_lines}"
+    elif record_type == "matrix_cause_row":
+        # Check ONLY CAUSE TAG field (before '| GROUP:') so zone-grouped rows don't crowd Effect queries
+        cause_line = next(
+            (ln for ln in child_lines[:3] if "cause tag:" in ln.lower()),
+            child_lines[0] if child_lines else "",
+        )
+        subject_text = cause_line.split("|", 1)[0].lower()
+    else:
+        first_line = child_lines[0].lower() if child_lines else ""
+        subject_text = f"{heading_lower}\n{first_line}"
+
+    compact_subject = subject_text.replace("-", "").replace("_", "")
+    return any(
+        e in subject_text or e.replace("-", "").replace("_", "") in compact_subject
+        for e in cleaned_entities_lower
+    )
+
+
+def _prioritize_scrolled_points(
+    points: Sequence[Any],
+    cleaned_entities_lower: set[str],
+    *,
+    cap: int,
+) -> list[Any]:
+    """Order scrolled exact-entity points so primary subject and Effect-column chunks survive culling."""
+    if not points:
+        return []
+
+    def _priority_key(pt: Any) -> tuple[int, int]:
+        payload = dict(getattr(pt, "payload", None) or {})
+        cand = {
+            "record_type": payload.get("record_type"),
+            "heading_path": payload.get("heading_path") or "",
+            "child_text": payload.get("child_text") or "",
+        }
+        is_subj = 1 if _is_primary_subject_match(cand, cleaned_entities_lower) else 0
+        rtype = str(payload.get("record_type") or "")
+        type_rank = 2 if rtype == "matrix_effect_col" else (1 if rtype in ("cad_logic_diagram", "schedule_row") else 0)
+        return (-is_subj, -type_rank)
+
+    return sorted(points, key=_priority_key)[:cap]
+
+
 def _upsert_exact_tag_candidate(
     candidates_by_id: dict[str, dict[str, Any]],
     point: Any,
     *,
     min_score: float | None = None,
+    is_subject: bool = False,
 ) -> str:
     """Insert or upgrade a Qdrant point as an exact_tag_match candidate and return its chunk_id."""
     payload = dict(point.payload or {})
@@ -300,6 +363,8 @@ def _upsert_exact_tag_candidate(
     existing = candidates_by_id.get(chunk_id)
     if existing is not None:
         existing["exact_tag_match"] = True
+        if is_subject:
+            existing["exact_subject_match"] = True
         if min_score is not None:
             existing["score"] = max(float(existing.get("score", 0.0)), min_score)
     else:
@@ -310,6 +375,8 @@ def _upsert_exact_tag_candidate(
             fallback_domain=str(payload.get("domain") or "general"),
         )
         cand["exact_tag_match"] = True
+        if is_subject:
+            cand["exact_subject_match"] = True
         candidates_by_id[chunk_id] = cand
     return chunk_id
 
@@ -490,11 +557,15 @@ class HybridRetriever:
                 )
                 if _chunk_matches_entities(candidate, cleaned_entities_lower):
                     candidate["exact_tag_match"] = True
+                    if _is_primary_subject_match(candidate, cleaned_entities_lower):
+                        candidate["exact_subject_match"] = True
                 chunk_id = candidate["chunk_id"]
                 existing = merged_by_chunk.get(chunk_id)
                 if existing is None or score > float(existing.get("score", 0.0)):
                     if existing is not None and existing.get("exact_tag_match"):
                         candidate["exact_tag_match"] = True
+                    if existing is not None and existing.get("exact_subject_match"):
+                        candidate["exact_subject_match"] = True
                     merged_by_chunk[chunk_id] = candidate
 
         if cleaned_entities:
@@ -502,10 +573,22 @@ class HybridRetriever:
                 associated_entities=cleaned_entities,
                 doc_ids=doc_ids,
                 file_types=file_types,
-                limit=max(top_limit, 24),
+                limit=max(top_limit * 5, 120),
+            )
+            supp_points = _prioritize_scrolled_points(
+                supp_points,
+                cleaned_entities_lower,
+                cap=max(top_limit * 2, 24),
             )
             for point in supp_points:
-                _upsert_exact_tag_candidate(merged_by_chunk, point, min_score=0.85)
+                pl = dict(point.payload or {})
+                is_subj = _is_primary_subject_match(pl, cleaned_entities_lower)
+                _upsert_exact_tag_candidate(
+                    merged_by_chunk,
+                    point,
+                    min_score=0.88 if is_subj else 0.85,
+                    is_subject=is_subj,
+                )
 
         sorted_candidates = sorted(
             merged_by_chunk.values(),
@@ -624,6 +707,8 @@ class HybridRetriever:
                 target = candidates_by_id.setdefault(chunk_id, candidate)
                 if has_entity_match:
                     target["exact_tag_match"] = True
+                    if _is_primary_subject_match(candidate, cleaned_entities_lower):
+                        target["exact_subject_match"] = True
                 domain_chunk_lists[dom].append(target)
 
         guaranteed_ids: set[str] = set()
@@ -631,7 +716,7 @@ class HybridRetriever:
         # Supplementary exact-entity pre-fetch ensures exact tag matches surface even if
         # crowded out of dense/sparse semantic top_limit by similar prose.
         if raw_cleaned_entities:
-            scroll_limit = max(top_limit, 24)
+            scroll_limit = max(top_limit * 5, 120)
             supp_points = await self._scroll_exact_entity_points(
                 associated_entities=raw_cleaned_entities,
                 doc_ids=doc_ids,
@@ -654,8 +739,17 @@ class HybridRetriever:
                     limit=scroll_limit,
                 )
 
+            supp_points = _prioritize_scrolled_points(
+                supp_points,
+                cleaned_entities_lower,
+                cap=max(top_limit * 2, 32),
+            )
             for point in supp_points:
-                chunk_id = _upsert_exact_tag_candidate(candidates_by_id, point)
+                pl = dict(point.payload or {})
+                is_subj = _is_primary_subject_match(pl, cleaned_entities_lower)
+                chunk_id = _upsert_exact_tag_candidate(candidates_by_id, point, is_subject=is_subj)
+                rrf_scores_by_id[chunk_id] = rrf_scores_by_id.get(chunk_id, 0.0) + (2.0 / float(rrf_k))
+                guaranteed_ids.add(chunk_id)
                 rrf_scores_by_id[chunk_id] = rrf_scores_by_id.get(chunk_id, 0.0) + (2.0 / float(rrf_k))
                 guaranteed_ids.add(chunk_id)
 
