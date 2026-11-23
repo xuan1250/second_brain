@@ -561,3 +561,29 @@ def test_review_regressions_prose_main_exclusion_and_extra_isa_loops():
     for sl in slices:
         assert chunker.count_tokens(sl) <= 45
 
+
+def test_entity_extractor_fire_gas_zones_and_composite_tags():
+    """Verify bidirectional FZ/GZ zone normalization and F&G composite tag extraction without prose leakage."""
+    ex = EntityExtractor()
+
+    for sample, expected in [
+        ("FZ-001", {"FZ-001", "FZ001"}),
+        ("FZ001", {"FZ-001", "FZ001"}),
+        ("GZ-002", {"GZ-002", "GZ002"}),
+        ("GZ002", {"GZ-002", "GZ002"}),
+        ("GA-FZ001", {"GA-FZ001", "GAFZ001", "FZ001", "FZ-001"}),
+        ("GA-FZ001J", {"GA-FZ001J", "FZ001", "FZ-001"}),
+        ("HR-FZ006-02A", {"HR-FZ006-02A", "FZ006", "FZ-006"}),
+        ("BC-FZ001B", {"BC-FZ001B", "BCFZ001B", "FZ001", "FZ-001"}),
+        ("BC-FZ006-02AB", {"BC-FZ006-02AB", "FZ006", "FZ-006"}),
+        ("FGS-ESD-3-1", {"FGS-ESD-3-1", "FGSESD31"}),
+        ("HS-00401BJ", {"HS-00401BJ", "HS00401BJ"}),
+        ("HS-00401MA", {"HS-00401MA", "HS00401MA"}),
+    ]:
+        extracted = set(ex.extract_entities(sample))
+        assert expected <= extracted, f"Missing {expected - extracted} in {extracted} for {sample}"
+
+    q_stems = set(ex.extract_query_tags_and_stems("what are causes will active FZ-001 signal?"))
+    assert {"FZ-001", "FZ001"} <= q_stems
+    assert ex.extract_query_tags_and_stems("Check FIRE ZONE signal and GAS alarm") == []
+

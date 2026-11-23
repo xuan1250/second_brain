@@ -690,3 +690,130 @@ async def test_end_to_end_engineering_crag_stream_cross_doc(tmp_path: Path, seed
     assert cited_files & {"process_ce_chart_p3_p4.pdf", "esds_logic_p8_p51.pdf"}
 
     await close_checkpointer()
+
+
+@pytest.mark.asyncio
+async def test_zone_query_prioritizes_effect_cols_over_crowded_cause_rows():
+    """Verify primary-subject prioritization keeps FZ-001 Effect columns above crowded FZ-001 Cause rows."""
+    client = AsyncQdrantClient(location=":memory:")
+    await init_qdrant_collection(client, collection=TEST_COLLECTION, dimensions=STUB_DIM)
+    embedder = DeterministicStubEmbedder(dimensions=STUB_DIM)
+    sparse = DeterministicBM25Encoder()
+
+    seed_rows: list[dict[str, Any]] = []
+    for idx in range(1, 31):
+        txt = (
+            f"CAUSE TAG: GSD-{10100 + idx} | GROUP: FZ-001 Jetty Area | LEVEL: HH\n"
+            f"Cause Description: GAS DETECTOR JETTY AREA {idx}\n"
+            "Triggered Effects (1): GA-FZ001 -> Mark 'X'"
+        )
+        seed_rows.append(
+            {
+                "id": f"00000000-0000-0000-0001-{idx:012d}",
+                "text": txt,
+                "payload": {
+                    "chunk_id": f"c-cause-fz1-{idx}",
+                    "doc_id": "doc-fgs-ce",
+                    "source_filename": "fgs_ce.pdf",
+                    "file_type": "pdf",
+                    "heading_path": f"Cause & Effect Matrix > Cause GSD-{10100 + idx} (FZ-001 Jetty Area)",
+                    "page_numbers": [4],
+                    "child_text": txt,
+                    "parent_content": txt,
+                    "domain": "engineering",
+                    "subdomain": "eng.control_systems",
+                    "authority_tier": 1,
+                    "is_current": True,
+                    "associated_entities": ["FZ-001", "FZ001", f"GSD-{10100 + idx}"],
+                    "record_type": "matrix_cause_row",
+                },
+            }
+        )
+
+    for idx, (etag, edesc) in enumerate(
+        [
+            ("GA-FZ001", "FZ001 JETTY AREA GAS COMMON ALARM"),
+            ("FA-FZ001", "FZ001 JETTY AREA FLAME COMMON ALARM"),
+            ("HR-FZ001", "2 TONES FZ001 JETTY AREA FIRE HORN"),
+            ("BC-FZ001B", "GAS(BLUE) FZ001 JETTY AREA GAS BEACON"),
+        ],
+        start=1,
+    ):
+        txt = (
+            f"EFFECT TAG: {etag} | P&ID: | ACTION: ALARM\n"
+            f"Effect Description: {edesc}\n"
+            "Triggering Causes (2): GSD-10101 -> Mark 'X'; GSD-10102 -> Mark 'X'"
+        )
+        seed_rows.append(
+            {
+                "id": f"00000000-0000-0000-0002-{idx:012d}",
+                "text": txt,
+                "payload": {
+                    "chunk_id": f"c-eff-{etag}",
+                    "doc_id": "doc-fgs-ce",
+                    "source_filename": "fgs_ce.pdf",
+                    "file_type": "pdf",
+                    "heading_path": f"Cause & Effect Matrix > Effect {etag} (ALARM)",
+                    "page_numbers": [4],
+                    "child_text": txt,
+                    "parent_content": txt,
+                    "domain": "engineering",
+                    "subdomain": "eng.control_systems",
+                    "authority_tier": 1,
+                    "is_current": True,
+                    "associated_entities": ["FZ-001", "FZ001", etag],
+                    "record_type": "matrix_effect_col",
+                },
+            }
+        )
+
+    d_vecs = await embedder.embed_documents([r["text"] for r in seed_rows])
+    s_vecs = await sparse.encode([r["text"] for r in seed_rows])
+    await client.upsert(
+        collection_name=TEST_COLLECTION,
+        points=[
+            qmodels.PointStruct(id=r["id"], vector={DENSE: dv, SPARSE: sv}, payload=r["payload"])
+            for r, dv, sv in zip(seed_rows, d_vecs, s_vecs)
+        ],
+    )
+
+    retriever = HybridRetriever(
+        qdrant=client,
+        embedder=embedder,
+        sparse_encoder=sparse,
+        collection=TEST_COLLECTION,
+        limit=6,
+    )
+    reranker = FlashRankReranker(top_n=6, ranker=LowCrossEncoderStubRanker(low_score=0.05))
+    fake_rewrite = json.dumps(
+        {
+            "needs_retrieval": True,
+            "routing_mode": "single",
+            "target_domains": ["engineering"],
+            "domain_queries": {"engineering": "causes activate FZ-001 signal"},
+            "domain_weights": {"engineering": 1.0},
+        }
+    )
+    graph = build_rag_graph(
+        retriever=retriever,
+        reranker=reranker,
+        llm=FakeCountingChatModel(messages=iter([AIMessage(content=fake_rewrite)])),
+        collection=TEST_COLLECTION,
+    )
+
+    rw = await graph.nodes["rewrite_query"].ainvoke(
+        {"original_query": "what are causes will activate FZ-001 signal?", "steps": []}
+    )
+    assert rw["query_intent"] == "matrix_trace"
+    assert rw["engineering_top_n"] == 12
+    assert {"FZ-001", "FZ001"} <= set(rw["matched_entities"])
+
+    ret = await graph.nodes["retrieve"].ainvoke(rw)
+    rr = await graph.nodes["rerank"].ainvoke({**rw, **ret})
+    reranked = rr["reranked_chunks"]
+    assert len(reranked) == 12
+    top_eff_ids = {c["chunk_id"] for c in reranked[:4]}
+    assert top_eff_ids == {"c-eff-GA-FZ001", "c-eff-FA-FZ001", "c-eff-HR-FZ001", "c-eff-BC-FZ001B"}
+    assert all(c.get("exact_subject_match") is True for c in reranked[:4])
+
+    await client.close()

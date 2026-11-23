@@ -11,6 +11,7 @@ import pytest
 from scripts.generate_engineering_fixtures import generate_all_fixtures
 from src.ingestion.engineering_extractor import (
     LegendContext,
+    _merge_adjacent_voting_spans,
     compute_bbox_iou,
     compute_safe_ocr_dpi,
     deduplicate_ocr_detections,
@@ -708,4 +709,247 @@ async def test_fastapi_upload_cad_dedup_downgrade_protection_and_explicit_retry(
         set_active_qdrant_client(None)
         await close_checkpointer()
         get_settings.cache_clear()
+
+
+def _build_rotated_fgs_ce_pdf(path: Path) -> Path:
+    """Create a 3-page /Rotate 90 Fire & Gas C&E chart exercising dense grids, merged cells, and continuation pruning."""
+    doc = fitz.open()
+
+    # Page 1: Rotated cover/summary sheet (must NOT become matrix_rotated_headers)
+    p1 = doc.new_page(width=842.0, height=1191.0)
+    # Place unrotated text at top-to-bottom coordinates; set_rotation(90) rotates visual display
+    p1.insert_text((80, 180), "Fire and Gas Cause & Effect Chart - Cover Sheet", fontsize=14, fontname="helv")
+    p1.insert_text((80, 230), "Project Doc No: 195363-07-LS-0001 | Rev.2", fontsize=10, fontname="helv")
+    p1.insert_text((80, 270), "General notes and revision history for LNG receiving terminal.", fontsize=10, fontname="helv")
+    p1.set_rotation(90)
+
+    def _add_rotated_matrix_page(
+        *,
+        effects: list[tuple[str, str, str, str]],  # (pid, action, desc, tag)
+        causes: list[dict],
+        merged_pairs: bool = False,
+        with_notes: bool = False,
+    ) -> None:
+        # Build visual landscape content directly then rotate page? Note in PyMuPDF 2.0
+        # drawing in unrotated (842x1191) rotated-90 space with rotate=90 reproduces real CAD /Rotate 90 PDFs.
+        # Specifically: unrotated text written with rotate=90 has unrotated dir=(0,-1) -> visual dir=(1,0),
+        # and unrotated text with dir=(1,0) has visual dir=(0,1) -> vertical Effect headers!
+        # Let's construct in visual coords (1191x842) and inverse-transform by page.derotation_matrix,
+        # which guarantees authentic /Rotate 90 unrotated PDF stream + /Rotate 90 dictionary!
+        page = doc.new_page(width=842.0, height=1191.0)
+        page.set_rotation(90)
+        dm = page.derotation_matrix
+
+        def put_horiz(vx: float, vy: float, text: str, fs: float = 3.5) -> None:
+            pt = fitz.Point(vx, vy) * dm
+            page.insert_text((pt.x, pt.y), text, fontsize=fs, fontname="helv", rotate=90)
+
+        def put_vert(vx: float, vy: float, text: str, fs: float = 3.5) -> None:
+            pt = fitz.Point(vx, vy) * dm
+            page.insert_text((pt.x, pt.y), text, fontsize=fs, fontname="helv", rotate=180)
+
+        def vline(vx: float, vy0: float, vy1: float) -> None:
+            p_a = fitz.Point(vx, vy0) * dm
+            p_b = fitz.Point(vx, vy1) * dm
+            if abs(p_a.x - p_b.x) < 1.0:
+                page.draw_rect(fitz.Rect(p_a.x - 0.2, min(p_a.y, p_b.y), p_a.x + 0.2, max(p_a.y, p_b.y)), width=0.4)
+            else:
+                page.draw_rect(fitz.Rect(min(p_a.x, p_b.x), p_a.y - 0.2, max(p_a.x, p_b.x), p_a.y + 0.2), width=0.4)
+
+        def hline(vy: float, vx0: float, vx1: float) -> None:
+            p_a = fitz.Point(vx0, vy) * dm
+            p_b = fitz.Point(vx1, vy) * dm
+            if abs(p_a.y - p_b.y) < 1.0:
+                page.draw_rect(fitz.Rect(min(p_a.x, p_b.x), p_a.y - 0.2, max(p_a.x, p_b.x), p_a.y + 0.2), width=0.4)
+            else:
+                page.draw_rect(fitz.Rect(p_a.x - 0.2, min(p_a.y, p_b.y), p_a.x + 0.2, max(p_a.y, p_b.y)), width=0.4)
+
+        # Layout coordinates in visual 1191x842 space matching real F&G CAD sheet
+        hdr_top, hdr_bot = 55.0, 275.0
+        row_h = 8.0
+        col_w = 14.0
+        grid_x0 = 400.0
+        grid_x1 = grid_x0 + col_w * len(effects)
+        body_bot = hdr_bot + row_h * len(causes)
+
+        # Left cause table borders & headers
+        left_x0, rev_x1, zone_x1, tagname_x1, tagno_x1, logic_x1 = 148.0, 162.0, 198.0, 322.0, 344.0, 378.0
+        for bx in (left_x0, rev_x1, zone_x1, tagname_x1, tagno_x1, logic_x1, 386.0, grid_x0):
+            vline(bx, hdr_bot if bx < 386 else hdr_top, body_bot)
+        for idx in range(len(effects) + 1):
+            vx = grid_x0 + idx * col_w
+            # Omit inner border between MOV-00401 OPEN/CLOSE in middle description/tag band to simulate merged col
+            if merged_pairs and idx == 2:
+                vline(vx, hdr_top, 140.0)
+                vline(vx, 250.0, body_bot)
+            else:
+                vline(vx, hdr_top, body_bot)
+
+        hline(hdr_top, 386.0, grid_x1)
+        hline(105.0, 386.0, grid_x1)
+        hline(140.0, 386.0, grid_x1)
+        hline(210.0, 386.0, grid_x1)
+        hline(250.0, left_x0, grid_x1)
+        hline(hdr_bot, left_x0, grid_x1)
+
+        # Vertical header-label column (must be excluded from Effect columns)
+        put_vert(393.0, 62.0, "REV")
+        put_vert(393.0, 98.0, "P&ID Number")
+        put_vert(393.0, 132.0, "FUNCTION PERFORMED")
+        put_vert(393.0, 185.0, "TAG NAME")
+        put_vert(393.0, 238.0, "DEVICE ID")
+
+        # Horizontal Cause headers
+        put_horiz(151.0, 265.0, "REV")
+        put_horiz(165.0, 265.0, "FIRE ZONE NO")
+        put_horiz(245.0, 270.0, "TAG NAME")
+        put_horiz(326.0, 270.0, "TAG NO")
+        put_horiz(350.0, 270.0, "LOGIC")
+
+        # Effect column headers (14pt wide)
+        for idx, (pid, action, desc, etag) in enumerate(effects):
+            cx = grid_x0 + (idx + 0.5) * col_w
+            if pid:
+                put_vert(cx, 100.0, pid, fs=3.0)
+            if action:
+                put_vert(cx, 134.0, action, fs=3.2)
+            if desc:
+                dx = grid_x0 + (idx + 1.0) * col_w if (merged_pairs and idx == 1) else cx
+                if not (merged_pairs and idx == 2):
+                    put_vert(dx, 200.0, desc, fs=3.2)
+            if etag and not (merged_pairs and idx == 2):
+                tx = grid_x0 + (idx + 1.0) * col_w if (merged_pairs and idx == 1) else cx
+                put_vert(tx, 238.0, etag, fs=3.2)
+
+        # Cause rows + matrix marks
+        for r_i, c in enumerate(causes):
+            ry0 = hdr_bot + r_i * row_h
+            ry1 = ry0 + row_h
+            ry_mid = (ry0 + ry1) / 2.0 + 1.0
+            # Fine horizontal divider in TAG NAME / TAG NO (plus REV)
+            hline(ry1, left_x0, rev_x1)
+            hline(ry1, zone_x1, tagno_x1)
+            hline(ry1, logic_x1, grid_x0)
+            # Only draw horizontal divider across LOGIC & Matrix when not vertically merged with next row
+            if not c.get("merge_next_with_prev"):
+                hline(ry0, tagno_x1, grid_x1)
+                if not c.get("merge_zone_prev"):
+                    hline(ry0, rev_x1, zone_x1)
+            put_horiz(153.0, ry_mid, "2", fs=3.0)
+            if c.get("zone"):
+                put_horiz(170.0, ry_mid + 3.0, c["zone"], fs=3.2)
+            put_horiz(202.0, ry_mid, c["desc"], fs=3.0)
+            put_horiz(324.0, ry_mid, c["tag"], fs=3.0)
+            if c.get("voting"):
+                if c["voting"] == ">= 2":
+                    put_horiz(349.0, ry_mid + 2.0, ">=", fs=3.0)
+                    put_horiz(355.0, ry_mid + 2.0, "2", fs=3.0)
+                else:
+                    put_horiz(352.0, ry_mid, c["voting"], fs=3.0)
+            put_horiz(388.0, ry_mid, str(r_i + 1), fs=3.0)
+            for col_i, mark_sym in c.get("marks", {}).items():
+                mx = grid_x0 + (col_i + 0.5) * col_w - 1.0
+                my = ry_mid + (2.0 if c.get("merged_mark_y_offset") else 0.0)
+                put_horiz(mx, my, mark_sym, fs=3.4)
+
+        hline(body_bot, left_x0, grid_x1)
+
+        if with_notes:
+            ny = body_bot + 10.0
+            put_horiz(left_x0, ny, "Note.", fs=3.5)
+            put_horiz(left_x0, ny + 8.0, "2 : Confirmed Fire in FZ-006 (Flare KOD) will close PCV-80101.", fs=3.5)
+
+    # Page 2: Dense F&G matrix with merged FZ-001 zone, H vs HH, >= 2 + X merged rows, MOV-00401 OPEN/CLOSE, NOTE 2
+    _add_rotated_matrix_page(
+        effects=[
+            ("", "ALARM", "FZ001 JETTY AREA GAS COMMON ALARM", "GA-FZ001"),
+            ("195363-07-PID-0004", "OPEN", "JETTY AREA MOTOR OPERATED VALVE", "MOV-00401"),
+            ("195363-07-PID-0004", "CLOSE", "", ""),
+            ("PID-0106", "Close (NOTE 2)", "Flare PCV", "PCV-80101"),
+        ],
+        causes=[
+            {"zone": "FZ-001", "desc": "GAS DETECTOR JETTY TRESTLE AREA", "tag": "GSD-10201", "voting": "H", "marks": {}},
+            {"merge_zone_prev": True, "desc": "GAS DETECTOR JETTY TRESTLE AREA", "tag": "GSD-10201", "voting": "HH", "marks": {0: "x"}},
+            {"merge_zone_prev": True, "desc": "FLAME DETECTOR UNLOADING ARM", "tag": "FSD-10101", "voting": ">= 2", "marks": {3: "X"}},
+            {"merge_zone_prev": True, "merge_next_with_prev": True, "desc": "FLAME DETECTOR UNLOADING ARM", "tag": "FSD-10102", "marks": {}},
+            {"merge_zone_prev": True, "desc": "SOFT SWITCH MOV OPEN", "tag": "HS-00401MA", "voting": "ON", "marks": {1: "x"}},
+            {"merge_zone_prev": True, "desc": "SOFT SWITCH MOV CLOSE", "tag": "HS-00401MB", "voting": "ON", "marks": {2: "x"}},
+        ],
+        merged_pairs=True,
+        with_notes=True,
+    )
+
+    # Page 3: Continuation sheet where GA-FZ001 has 0 marks and GA-FZ005 has 1 mark
+    _add_rotated_matrix_page(
+        effects=[
+            ("", "ALARM", "FZ001 JETTY AREA GAS COMMON ALARM", "GA-FZ001"),
+            ("", "ALARM", "FZ005 LNG TANK AREA GAS COMMON ALARM", "GA-FZ005"),
+        ],
+        causes=[
+            {"zone": "FZ-005", "desc": "GAS DETECTOR LNG TANK AREA", "tag": "GSD-20101", "voting": "HH", "marks": {1: "x"}},
+            {"merge_zone_prev": True, "desc": "GAS DETECTOR LNG TANK AREA", "tag": "GSD-20102", "voting": "HH", "marks": {1: "x"}},
+            {"merge_zone_prev": True, "desc": "GAS DETECTOR LNG TANK AREA", "tag": "GSD-20103", "voting": "HH", "marks": {}},
+            {"merge_zone_prev": True, "desc": "GAS DETECTOR LNG TANK AREA", "tag": "GSD-20104", "voting": "HH", "marks": {}},
+        ],
+    )
+
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def test_rotated_fire_and_gas_ce_matrix_grid_and_continuation(tmp_path: Path):
+    """Verify /Rotate 90 F&G C&E extraction: cover classification, merged zones/voting/actions, lowercase 'x', notes, and continuation pruning."""
+    merged_unicode = _merge_adjacent_voting_spans(
+        [
+            {"text": "≥", "bbox": [350.0, 297.0, 351.8, 301.0]},
+            {"text": "2", "bbox": [352.5, 297.0, 355.0, 301.0]},
+        ]
+    )
+    assert len(merged_unicode) == 1 and merged_unicode[0]["text"] == "≥ 2"
+
+    pdf_path = _build_rotated_fgs_ce_pdf(tmp_path / "rotated_fgs_ce.pdf")
+    res = extract_engineering_pdf(pdf_path)
+    assert res is not None
+    profile = res["engineering_profile"]
+
+    assert profile["page_modes"][1] != "matrix_rotated_headers"
+    assert profile["page_modes"][2] == "matrix_rotated_headers"
+    assert profile["page_modes"][3] == "matrix_rotated_headers"
+    assert "NOTE 2" in profile["legend_context"]["notes_map"]
+
+    p2_recs = profile["pages"][1]["records"]
+    p2_effects = [r for r in p2_recs if r["record_type"] == "matrix_effect_col"]
+    p2_causes = [r for r in p2_recs if r["record_type"] == "matrix_cause_row"]
+
+    assert len(p2_causes) == 6
+    # Header-label column must not be emitted as an Effect column
+    assert all(r["metadata"]["effect_tag"] not in ("REV", "DEVICE ID", "TAG NAME") for r in p2_effects)
+
+    # Lowercase 'x' marks trigger GA-FZ001 ONLY from [HH] (not [H]) without row description bleeding
+    ga_eff = next(r for r in p2_effects if r["metadata"]["effect_tag"] == "GA-FZ001")
+    ga_causes = [c["cause_tag"] for c in ga_eff["metadata"]["causes"]]
+    assert ga_causes == ["GSD-10201"]
+    assert ga_eff["metadata"]["causes"][0]["signal_level"] == "HH"
+    assert ga_eff["metadata"]["causes"][0]["group"] == "FZ-001"
+    assert ga_eff["metadata"]["causes"][0]["description"] == "GAS DETECTOR JETTY TRESTLE AREA"
+
+    # Merged '>= 2' + 'X' row propagates to BOTH FSD-10101 and FSD-10102, and inlines NOTE 2 on PCV-80101
+    pcv_eff = next(r for r in p2_effects if r["metadata"]["effect_tag"] == "PCV-80101")
+    assert sorted(c["cause_tag"] for c in pcv_eff["metadata"]["causes"]) == ["FSD-10101", "FSD-10102"]
+    assert all(c["voting"] == ">= 2" for c in pcv_eff["metadata"]["causes"])
+    assert all(c["description"] == "FLAME DETECTOR UNLOADING ARM" for c in pcv_eff["metadata"]["causes"])
+    assert any("NOTE 2:" in n for n in pcv_eff["metadata"]["inlined_notes"])
+
+    # Horizontally merged MOV-00401 header splits OPEN (HS-00401MA) vs CLOSE (HS-00401MB)
+    mov_open = next(r for r in p2_effects if r["metadata"]["effect_tag"] == "MOV-00401" and r["metadata"]["action"] == "OPEN")
+    mov_close = next(r for r in p2_effects if r["metadata"]["effect_tag"] == "MOV-00401" and r["metadata"]["action"] == "CLOSE")
+    assert [c["cause_tag"] for c in mov_open["metadata"]["causes"]] == ["HS-00401MA"]
+    assert [c["cause_tag"] for c in mov_close["metadata"]["causes"]] == ["HS-00401MB"]
+
+    # Page 3 continuation prunes inactive GA-FZ001 while retaining active GA-FZ005
+    p3_effects = [r for r in profile["pages"][2]["records"] if r["record_type"] == "matrix_effect_col"]
+    p3_effect_tags = [r["metadata"]["effect_tag"] for r in p3_effects]
+    assert "GA-FZ001" not in p3_effect_tags
+    assert "GA-FZ005" in p3_effect_tags
 
