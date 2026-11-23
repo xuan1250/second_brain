@@ -56,13 +56,13 @@ ENTITY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:TI|PI|FI|LI|AI|AO|DI|DO|FIC|PIC|LIC|TIC|PIA|LIA|HIC|TIA|FIA|XV|FCV|PCV|HCV|PSHH|PALL|PAHH|LAHH|PDALL|UZA|UZ|ZI|VI|XI)\d{3,6}[A-Z]?\b"
     ),
     "esd_fgs_signal": re.compile(
-        r"\b(?:HZ|UA|UZ|UZA|RSESD|LTRCV|LTFCS|MAIN)(?=[-_A-Z0-9]*\d)[-_A-Z0-9]{2,20}\b"
+        r"\b(?:(?:HZ|FZ|GZ|UA|UZ|UZA|FGS|RSESD|LTRCV|LTFCS|MAIN)(?=[-_A-Z0-9]*\d)[-_A-Z0-9]{2,20}|(?:GA|FA|MA|TA|HR|BC)-(?:FZ|GZ)\d{3}[-_A-Z0-9]*)\b"
     ),
     "cabinet_io_id": re.compile(
         r"\b(?:LNG-[A-Z0-9-]+|FCS\d{4}|SCS\d{4}|AAI\d{3}-[A-Z]|AAV\d{3}-[A-Z]|ADV\d{3}-[A-Z]|A[IO]\.[A-Z]\.[A-Z]|\d[FR]TB\d+|FS\d{2}|RS\d{2}|MCC-\d{3}[A-Z]?|CB-\d{2,4})\b"
     ),
     "isa_instrument_tag": re.compile(
-        r"\b[A-Z]{2,6}-\d{3,6}[A-Z]?(?:/[A-Z0-9]+)*\b"
+        r"\b[A-Z]{2,6}-\d{3,6}[A-Z]{0,2}(?:/[A-Z0-9]+)*\b"
     ),
 }
 
@@ -78,7 +78,8 @@ INDUSTRIAL_TAG_CATEGORIES: frozenset[str] = frozenset(
 
 _LOGIC_SUFFIX_RE = re.compile(r"(?:_R\d+|_\d{2})$")
 _COMPACT_TAG_RE = re.compile(r"^([A-Z]{2,6})(\d{3,6}[A-Z]?)$")
-_HYPHENATE_PREFIXES: frozenset[str] = frozenset({"HZ", "UA", "UZ", "XV", "TT", "PT", "FT", "LT"})
+_HYPHENATE_PREFIXES: frozenset[str] = frozenset({"HZ", "FZ", "GZ", "UA", "UZ", "XV", "TT", "PT", "FT", "LT"})
+_EMBEDDED_ZONE_RE = re.compile(r"^[A-Z]{2,4}-(FZ|GZ)(\d{3})(?:[-_A-Z0-9]*)$")
 _VOTING_CHANNEL_RE = re.compile(r"^([A-Z]{2,6}-\d{3,6})(?!\d)([A-Z0-9]+(?:/[A-Z0-9]+)+)$")
 _ISA_LOOP_PREFIXES: frozenset[str] = frozenset(
     {
@@ -188,6 +189,13 @@ def expand_engineering_tag_stems(
             prefix, rest = compact_match.groups()
             if prefix in _HYPHENATE_PREFIXES:
                 _append_unique(per_tag, local_seen, f"{prefix}-{rest}")
+
+        # 4b. Cross-link zone-scoped composite tags (e.g. GA-FZ001 -> FZ001, FZ-001)
+        zone_match = _EMBEDDED_ZONE_RE.match(base)
+        if zone_match:
+            z_prefix, z_digits = zone_match.groups()
+            _append_unique(per_tag, local_seen, f"{z_prefix}{z_digits}")
+            _append_unique(per_tag, local_seen, f"{z_prefix}-{z_digits}")
 
         # 6. Cross-link ISA loop number stems
         for candidate in (base, *split_channels):

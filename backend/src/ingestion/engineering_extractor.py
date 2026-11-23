@@ -11,6 +11,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -32,26 +33,72 @@ ACTION_MARKS = frozenset({"X", "O", "R", "P", "B"})
 
 _TAG_TOKEN_RE = re.compile(
     r"\b(?:"
-    r"[A-Z]{2,6}-\d{3,6}[A-Z]?(?:/[A-Z0-9]+)*"
+    r"(?:GA|FA|MA|TA|HR|BC)-(?:FZ|GZ)\d{3}[A-Z0-9-]*"
+    r"|[A-Z]{2,6}-\d{3,6}[A-Z]{0,2}(?:/[A-Z0-9]+)*"
     r"|(?:TI|PI|FI|LI|AI|AO|DI|DO|FIC|PIC|LIC|TIC|PIA|LIA|HIC|TIA|FIA|XV|FCV|PCV|HCV|PSHH|PALL|PAHH|LAHH|PDALL|UZA|UZ|ZI|VI|XI)\d{3,6}[A-Z]?"
-    r"|(?:HZ|UA|UZ|UZA|RSESD|LTRCV|LTFCS|MAIN)(?=[-_A-Z0-9]*\d)[-_A-Z0-9]{2,20}"
+    r"|(?:HZ|FZ|GZ|UA|UZ|UZA|FGS|RSESD|LTRCV|LTFCS|MAIN)(?=[-_A-Z0-9]*\d)[-_A-Z0-9]{2,20}"
     r"|(?:LNG-[A-Z0-9-]+|FCS\d{4}|SCS\d{4}|AAI\d{3}-[A-Z]|AAV\d{3}-[A-Z]|ADV\d{3}-[A-Z]|\d[FR]TB\d+|FS\d{2}|RS\d{2}|CB-\d+|MCC-[A-Z0-9]+)"
     r")\b"
 )
 
 _PID_RE = re.compile(r"\bPID[-_]?\d{2,6}\b", re.IGNORECASE)
+_PID_CELL_RE = re.compile(r"\b(?:[A-Z0-9]+-)*PID[-_]?\d{2,6}(?:[,_]\d+(?:/\d+)?)?\b", re.IGNORECASE)
 _NOTE_REF_RE = re.compile(r"\bNOTE\s*[-#:]?\s*(\d+)\b", re.IGNORECASE)
 _SYMBOL_DEF_LINE_RE = re.compile(r"^\s*([XOPRB])\s*[:=]\s*([A-Za-z0-9].+?)\s*$")
 _SYMBOL_DEF_INLINE_RE = re.compile(r"(?:^|\n)\s*([XOPRB])\s*[:=]\s*[A-Za-z][^\n]*")
 _NOTE_DEF_START_RE = re.compile(r"^\s*(NOTE\s*[-#:]?\s*(\d+))\s*[:.\-]\s*(.+?)\s*$", re.IGNORECASE)
-_VOTING_RE = re.compile(r"\b(?:\d+\s*out\s*of\s*\d+|\d+\s*oo\s*[\dN]+)\b", re.IGNORECASE)
+_NOTE_SECTION_RE = re.compile(r"^\s*NOTES?\.?:?\s*$", re.IGNORECASE)
+_NOTE_NUM_COLON_RE = re.compile(r"^\s*(\d{1,3})\s*:\s*(.+?)\s*$")
+_PAGE_NUM_FOOTER_RE = re.compile(r"^\s*\d+\s*/\s*\d+\s*$")
+_VOTING_RE = re.compile(
+    r"(?:\b(?:\d+\s*out\s*of\s*\d+|\d+\s*oo\s*[\dN]+)\b|(?:≥|>=)\s*\d+)",
+    re.IGNORECASE,
+)
+_SIGNAL_LEVEL_RE = re.compile(r"^(?:HH|LL|H|L|ON|OFF)$", re.IGNORECASE)
 _GROUP_CODE_RE = re.compile(r"^(?:ESD[-_]?\d+|FGS|PSD|SIS|BMS|HVAC)$", re.IGNORECASE)
+_FIRE_ZONE_GROUP_RE = re.compile(r"^(?:FZ|GZ)-?\d{3}\b", re.IGNORECASE)
 _LOGIC_GATE_RE = re.compile(r"\b(?:AND|OR|RS|SR|TON|TOF|SET|RESET|NOT|XOR)\b")
 _POU_TITLE_RE = re.compile(
     r"\b\d+\.\d+\.\s*[A-Z][A-Z0-9_]+(?:\s*\(\*\s*[^*]+\s*\*\))?",
     re.IGNORECASE,
 )
 _CROSS_REF_RE = re.compile(r"\(\*\s*([^*\n]+?)\s*\*\)")
+
+_CE_HEADER_LABEL_TOKENS = frozenset(
+    {
+        "EFFECT",
+        "REV",
+        "P&ID NUMBER",
+        "P&ID NO",
+        "P&ID",
+        "NOTE",
+        "NOTES",
+        "FUNCTION",
+        "PERFORMED",
+        "FUNCTION PERFORMED",
+        "TAG NAME",
+        "TAG NO",
+        "DEVICE ID",
+        "CONTROL DEVICE",
+        "SHUTDOWN OR",
+        "ID",
+        "ACTION",
+        "CAUSE",
+    }
+)
+
+_CAUSE_TABLE_HEADER_CUES = frozenset(
+    {
+        "CAUSE DESCRIPTION",
+        "CAUSE TAG",
+        "TAG NAME",
+        "TAG NO",
+        "FIRE ZONE NO",
+        "LOGIC",
+        "VOTING",
+        "GROUP",
+    }
+)
 
 _EFFECT_ACTION_KEYWORDS = (
     "close",
@@ -60,6 +107,7 @@ _EFFECT_ACTION_KEYWORDS = (
     "stop",
     "start",
     "alarm",
+    "active",
     "activate",
     "activation",
     "shutdown",
@@ -204,6 +252,143 @@ def _extract_record_tags(text: str) -> list[str]:
     return tags
 
 
+@lru_cache(maxsize=1)
+def _pymupdf_coords_need_rotation() -> bool:
+    """Detect whether PyMuPDF returns unrotated mediabox coords on rotated pages."""
+    probe = fitz.open()
+    try:
+        page = probe.new_page(width=100, height=200)
+        page.insert_text((20, 40), "A")
+        page.set_rotation(90)
+        words = page.get_text("words")
+        if not words:
+            return False
+        # Unrotated x remains ~20; visual rotated x moves near 200 - 40 = 160
+        return float(words[0][0]) < 80.0
+    finally:
+        probe.close()
+
+
+def _page_needs_visual_rotation(page: fitz.Page) -> bool:
+    return bool(getattr(page, "rotation", 0) % 360) and _pymupdf_coords_need_rotation()
+
+
+def _transform_dir(direction: Sequence[float], rm: fitz.Matrix) -> tuple[float, float]:
+    dx = float(direction[0]) if len(direction) >= 1 else 1.0
+    dy = float(direction[1]) if len(direction) >= 2 else 0.0
+    return (float(rm.a) * dx + float(rm.c) * dy, float(rm.b) * dx + float(rm.d) * dy)
+
+
+def _get_visual_text_dict(page: fitz.Page) -> dict[str, Any]:
+    """Return page.get_text('dict') normalized into visual page.rect coordinate space."""
+    text_dict = page.get_text("dict")
+    if not _page_needs_visual_rotation(page):
+        return text_dict
+
+    rm = page.rotation_matrix
+    out_blocks: list[dict[str, Any]] = []
+    for block in text_dict.get("blocks", ()):
+        out_block = dict(block)
+        if "bbox" in block:
+            r = fitz.Rect(block["bbox"]) * rm
+            out_block["bbox"] = (float(r.x0), float(r.y0), float(r.x1), float(r.y1))
+        if "lines" in block:
+            out_lines: list[dict[str, Any]] = []
+            for line in block.get("lines", ()):
+                out_line = dict(line)
+                out_line["dir"] = _transform_dir(line.get("dir", (1.0, 0.0)), rm)
+                if "bbox" in line:
+                    lr = fitz.Rect(line["bbox"]) * rm
+                    out_line["bbox"] = (float(lr.x0), float(lr.y0), float(lr.x1), float(lr.y1))
+                out_spans: list[dict[str, Any]] = []
+                for span in line.get("spans", ()):
+                    out_span = dict(span)
+                    if "bbox" in span:
+                        sr = fitz.Rect(span["bbox"]) * rm
+                        out_span["bbox"] = (float(sr.x0), float(sr.y0), float(sr.x1), float(sr.y1))
+                    out_spans.append(out_span)
+                out_line["spans"] = out_spans
+                out_lines.append(out_line)
+            out_block["lines"] = out_lines
+        out_blocks.append(out_block)
+    return {**text_dict, "blocks": out_blocks}
+
+
+def _get_visual_words(page: fitz.Page) -> list[tuple[Any, ...]]:
+    """Return page.get_text('words') normalized into visual page.rect coordinate space."""
+    words = list(page.get_text("words"))
+    if not words or not _page_needs_visual_rotation(page):
+        return words
+
+    rm = page.rotation_matrix
+    transformed: list[tuple[Any, ...]] = []
+    for w in words:
+        r = fitz.Rect(float(w[0]), float(w[1]), float(w[2]), float(w[3])) * rm
+        transformed.append((float(r.x0), float(r.y0), float(r.x1), float(r.y1), *w[4:]))
+    return transformed
+
+
+def _get_visual_drawings(page: fitz.Page) -> list[dict[str, Any]]:
+    """Return page.get_drawings() normalized into visual page.rect coordinate space."""
+    drawings = list(page.get_drawings())
+    if not drawings or not _page_needs_visual_rotation(page):
+        return drawings
+
+    rm = page.rotation_matrix
+    transformed: list[dict[str, Any]] = []
+    for drw in drawings:
+        nd = dict(drw)
+        if drw.get("rect") is not None:
+            nd["rect"] = fitz.Rect(drw["rect"]) * rm
+        new_items: list[Any] = []
+        for item in drw.get("items", ()):
+            if not item:
+                new_items.append(item)
+                continue
+            op = item[0]
+            if op == "l" and len(item) >= 3:
+                new_items.append(("l", item[1] * rm, item[2] * rm, *item[3:]))
+            elif op == "re" and len(item) >= 2:
+                new_items.append(("re", fitz.Rect(item[1]) * rm, *item[2:]))
+            else:
+                new_items.append(item)
+        nd["items"] = new_items
+        transformed.append(nd)
+    return transformed
+
+
+def _get_visual_text_lines(page: fitz.Page) -> str:
+    """Extract visually ordered readable text lines, compensating for rotated PDF pages."""
+    if not _page_needs_visual_rotation(page):
+        return page.get_text("text") or ""
+
+    text_dict = _get_visual_text_dict(page)
+    spans: list[dict[str, Any]] = []
+    for block in text_dict.get("blocks", ()):
+        for line in block.get("lines", ()):
+            direction = line.get("dir", (1.0, 0.0))
+            if abs(float(direction[1])) > 0.8 and abs(float(direction[0])) < 0.2:
+                continue
+            for span in line.get("spans", ()):
+                txt = (span.get("text") or "").strip()
+                if txt:
+                    spans.append({"text": txt, "bbox": span["bbox"]})
+
+    if not spans:
+        return page.get_text("text") or ""
+
+    y_mids = [(float(s["bbox"][1]) + float(s["bbox"][3])) / 2.0 for s in spans]
+    rows = sorted(
+        _cluster_1d(y_mids, tol=3.0),
+        key=lambda grp: sum(y_mids[i] for i in grp) / len(grp),
+    )
+    out_lines: list[str] = []
+    for grp in rows:
+        row_spans = sorted((spans[i] for i in grp), key=lambda s: float(s["bbox"][0]))
+        out_lines.append(" ".join(s["text"] for s in row_spans).strip())
+    return "\n".join(ln for ln in out_lines if ln)
+
+
 def _cluster_1d(values: Sequence[float], tol: float) -> list[list[int]]:
     """Cluster indices of sorted 1D floats when adjacent values differ by <= tol."""
     if not values:
@@ -230,7 +415,15 @@ def _collect_table_grid_geometry(
     cell_rects: list[fitz.Rect] = []
 
     def _maybe_add_cell_rect(r: fitz.Rect) -> bool:
-        if 22.0 <= float(r.width) <= 420.0 and 12.0 <= float(r.height) <= 75.0:
+        rw, rh = float(r.width), float(r.height)
+        if rw <= 2.5 and rh >= 45.0:
+            v_candidates.append((float(r.x0) + float(r.x1)) / 2.0)
+            h_candidates.extend([float(r.y0), float(r.y1)])
+            return True
+        if rh <= 2.5 and rw >= 120.0:
+            h_candidates.append((float(r.y0) + float(r.y1)) / 2.0)
+            return True
+        if 22.0 <= rw <= 420.0 and 12.0 <= rh <= 75.0:
             cell_rects.append(r)
             v_candidates.extend([float(r.x0), float(r.x1)])
             h_candidates.extend([float(r.y0), float(r.y1)])
@@ -345,15 +538,15 @@ def profile_pdf_page(page: fitz.Page) -> tuple[str, dict[str, Any]]:
     width = float(rect.width)
     height = float(rect.height)
 
-    words = page.get_text("words")
-    drawings = page.get_drawings()
-    text_dict = page.get_text("dict")
-    raw_text = page.get_text("text")
+    words = _get_visual_words(page)
+    drawings = _get_visual_drawings(page)
+    text_dict = _get_visual_text_dict(page)
+    raw_text = _get_visual_text_lines(page)
 
     word_count = len(words)
     drawing_count = len(drawings)
     rotated_span_count = _count_rotated_spans(text_dict)
-    single_char_mark_count = sum(1 for w in words if str(w[4]).strip() in ACTION_MARKS)
+    single_char_mark_count = sum(1 for w in words if str(w[4]).strip().upper() in ACTION_MARKS)
     column_band_count, body_row_count = _estimate_column_bands(words, drawings)
 
     metrics: dict[str, Any] = {
@@ -447,16 +640,27 @@ def extract_legend_context(
         if mode not in ("document_legend_notes", "matrix_rotated_headers"):
             continue
 
-        text = page.get_text("text") or ""
+        text = _get_visual_text_lines(page)
         if not text.strip():
             continue
 
         page_found = False
         current_note_key: str | None = None
+        in_notes_section = False
 
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if not line:
+                current_note_key = None
+                continue
+
+            if _NOTE_SECTION_RE.match(line):
+                in_notes_section = True
+                current_note_key = None
+                continue
+
+            if _PAGE_NUM_FOOTER_RE.match(line):
+                in_notes_section = False
                 current_note_key = None
                 continue
 
@@ -471,6 +675,7 @@ def extract_legend_context(
                     symbol_map[sym_key] = sym_val
                 page_found = True
                 current_note_key = None
+                in_notes_section = False
                 continue
 
             note_match = _NOTE_DEF_START_RE.match(line)
@@ -482,7 +687,20 @@ def extract_legend_context(
                     notes_map[note_key] = note_body
                 current_note_key = note_key
                 page_found = True
+                in_notes_section = False
                 continue
+
+            if in_notes_section:
+                colon_note_match = _NOTE_NUM_COLON_RE.match(line)
+                if colon_note_match:
+                    note_num = colon_note_match.group(1)
+                    note_key = f"NOTE {note_num}"
+                    note_body = colon_note_match.group(2).strip()
+                    if note_key not in notes_map:
+                        notes_map[note_key] = note_body
+                    current_note_key = note_key
+                    page_found = True
+                    continue
 
             # Append wrapped continuation lines to the active note (including ALL-CAPS CAD notes)
             if (
@@ -578,8 +796,8 @@ def _fallback_column_intervals_from_words(
 def extract_coord_grid_schedule(page: fitz.Page, page_number: int) -> PageExtractionResult:
     """Reconstruct wide coordinate-grid tables/schedules with exact column-header bindings."""
     _, metrics = profile_pdf_page(page)
-    words = page.get_text("words")
-    drawings = page.get_drawings()
+    words = _get_visual_words(page)
+    drawings = _get_visual_drawings(page)
     page_height = float(page.rect.height)
 
     sig_vx, table_y_range = _collect_table_grid_geometry(drawings)
@@ -740,14 +958,127 @@ def extract_coord_grid_schedule(page: fitz.Page, page_number: int) -> PageExtrac
     )
 
 
+def _extract_grid_segments(
+    drawings: Sequence[dict[str, Any]],
+) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
+    """Extract visual vertical `(x, y0, y1)` and horizontal `(y, x0, x1)` grid border segments."""
+    v_segs: list[tuple[float, float, float]] = []
+    h_segs: list[tuple[float, float, float]] = []
+
+    def _add_rect_edges(r: fitz.Rect) -> None:
+        rw, rh = float(r.width), float(r.height)
+        x0, y0, x1, y1 = float(r.x0), float(r.y0), float(r.x1), float(r.y1)
+        if rw <= 2.5 and rh >= 4.0:
+            v_segs.append(((x0 + x1) / 2.0, min(y0, y1), max(y0, y1)))
+        elif rh <= 2.5 and rw >= 4.0:
+            h_segs.append(((y0 + y1) / 2.0, min(x0, x1), max(x0, x1)))
+        elif rw > 2.5 and rh > 2.5:
+            v_segs.append((x0, min(y0, y1), max(y0, y1)))
+            v_segs.append((x1, min(y0, y1), max(y0, y1)))
+            h_segs.append((y0, min(x0, x1), max(x0, x1)))
+            h_segs.append((y1, min(x0, x1), max(x0, x1)))
+
+    for drw in drawings:
+        items = drw.get("items") or ()
+        if not items and drw.get("rect") is not None:
+            _add_rect_edges(fitz.Rect(drw["rect"]))
+            continue
+        for item in items:
+            if not item:
+                continue
+            op = item[0]
+            if op == "l" and len(item) >= 3:
+                p1, p2 = item[1], item[2]
+                x1, y1 = float(p1.x), float(p1.y)
+                x2, y2 = float(p2.x), float(p2.y)
+                if abs(x1 - x2) <= 2.0 and abs(y1 - y2) >= 4.0:
+                    v_segs.append(((x1 + x2) / 2.0, min(y1, y2), max(y1, y2)))
+                elif abs(y1 - y2) <= 2.0 and abs(x1 - x2) >= 4.0:
+                    h_segs.append(((y1 + y2) / 2.0, min(x1, x2), max(x1, x2)))
+            elif op == "re" and len(item) >= 2:
+                _add_rect_edges(fitz.Rect(item[1]))
+
+    return v_segs, h_segs
+
+
+def _find_cell_span_1d(
+    pos: float,
+    cross_pos: float,
+    segs: Sequence[tuple[float, float, float]],
+    *,
+    max_span: float,
+) -> tuple[float, float] | None:
+    """Find tightest enclosing parallel grid borders crossing `cross_pos` around `pos`."""
+    low: list[float] = []
+    high: list[float] = []
+    for coord, a, b in segs:
+        if a - 2.0 <= cross_pos <= b + 2.0:
+            if coord < pos - 0.8:
+                low.append(coord)
+            elif coord > pos + 0.8:
+                high.append(coord)
+    if not low or not high:
+        return None
+    start = max(low)
+    end = min(high)
+    if 0.5 < (end - start) <= max_span:
+        return (start, end)
+    return None
+
+
+def _is_header_label_only_column(spans: Sequence[dict[str, Any]]) -> bool:
+    """Return True if rotated spans in a column contain only header-label keywords or dashes."""
+    norms: list[str] = []
+    for s in spans:
+        raw = str(s.get("text") or "").strip()
+        if not raw or raw in ("-", "—", "|"):
+            continue
+        norms.append(re.sub(r"\s+", " ", raw.rstrip(".:")).upper())
+    if not norms:
+        return True
+    return all(tok in _CE_HEADER_LABEL_TOKENS for tok in norms)
+
+
+def _merge_close_coords(values: Sequence[float], tol: float = 2.0) -> list[float]:
+    if not values:
+        return []
+    clusters = _cluster_1d(values, tol=tol)
+    merged = [sum(values[i] for i in grp) / len(grp) for grp in clusters]
+    return sorted(merged)
+
+
+def _collect_note_refs_from_texts(texts: Sequence[str], existing: Sequence[str] = ()) -> list[str]:
+    """Collect deduplicated 'NOTE N' references from whole or parenthesized span labels."""
+    seen: set[str] = set()
+    refs: list[str] = []
+    for ref in existing:
+        if ref and ref not in seen:
+            seen.add(ref)
+            refs.append(ref)
+    for txt in texts:
+        for note_num in _NOTE_REF_RE.findall(txt or ""):
+            key = f"NOTE {note_num}"
+            if key not in seen:
+                seen.add(key)
+                refs.append(key)
+    return refs
+
+
 def _parse_effect_column_spans(
     spans: Sequence[dict[str, Any]],
     col_idx: int,
     x_center: float,
+    *,
+    x0: float | None = None,
+    x1: float | None = None,
 ) -> dict[str, Any]:
     """Classify rotated spans belonging to one vertical C&E Effect column."""
     sorted_spans = sorted(spans, key=lambda s: (float(s["bbox"][1]), float(s["bbox"][0])))
-    texts = [str(s["text"]).strip() for s in sorted_spans if str(s["text"]).strip()]
+    texts = [
+        str(s["text"]).strip()
+        for s in sorted_spans
+        if str(s["text"]).strip() and str(s["text"]).strip() not in ("-", "—")
+    ]
 
     pid = ""
     effect_tag = ""
@@ -761,10 +1092,10 @@ def _parse_effect_column_spans(
             if note_match:
                 note_refs.append(f"NOTE {note_match.group(1)}")
             continue
-        if _PID_RE.fullmatch(txt):
+        if _PID_CELL_RE.fullmatch(txt):
             pid = txt.upper()
             continue
-        if not effect_tag and _TAG_TOKEN_RE.fullmatch(txt) and not _PID_RE.fullmatch(txt):
+        if not effect_tag and _TAG_TOKEN_RE.fullmatch(txt) and not _PID_CELL_RE.fullmatch(txt):
             effect_tag = txt
             continue
         lower_txt = txt.lower()
@@ -777,17 +1108,20 @@ def _parse_effect_column_spans(
         # Fallback search inside combined text
         for txt in texts:
             m = _TAG_TOKEN_RE.search(txt)
-            if m and not _PID_RE.fullmatch(m.group(0)):
+            if m and not _PID_CELL_RE.fullmatch(m.group(0)) and not _PID_RE.fullmatch(m.group(0)):
                 effect_tag = m.group(0)
                 break
 
     description = " ".join(desc_parts).strip()
     if not effect_tag:
         effect_tag = description or pid or f"EFFECT_COL_{col_idx + 1}"
+    note_refs = _collect_note_refs_from_texts(texts, note_refs)
 
     return {
         "col_index": col_idx + 1,
         "x_center": round(x_center, 2),
+        "x0": round(x0, 2) if x0 is not None else round(x_center - 14.0, 2),
+        "x1": round(x1, 2) if x1 is not None else round(x_center + 14.0, 2),
         "pid": pid,
         "effect_tag": effect_tag,
         "description": description,
@@ -803,20 +1137,180 @@ def _parse_effect_column_spans(
     }
 
 
+def _build_ce_effect_columns(
+    rotated_spans: Sequence[dict[str, Any]],
+    v_segs: Sequence[tuple[float, float, float]],
+    header_scan_y_max: float,
+) -> tuple[list[dict[str, Any]], float]:
+    """Group rotated Effect spans into columns, using vector column grid borders when present."""
+    if not rotated_spans:
+        return [], 0.0
+
+    # First identify and exclude header-label columns (EFFECT, REV, P&ID Number, DEVICE ID, etc.)
+    rot_x_mids = [(float(s["bbox"][0]) + float(s["bbox"][2])) / 2.0 for s in rotated_spans]
+    probe_clusters = sorted(
+        _cluster_1d(rot_x_mids, tol=8.0),
+        key=lambda grp: sum(rot_x_mids[i] for i in grp) / len(grp),
+    )
+    label_col_x_max = 0.0
+    data_spans: list[dict[str, Any]] = []
+    for grp in probe_clusters:
+        col_spans = [rotated_spans[i] for i in grp]
+        if _is_header_label_only_column(col_spans) and float(col_spans[0]["bbox"][2]) < 430.0:
+            label_col_x_max = max(label_col_x_max, max(float(s["bbox"][2]) for s in col_spans))
+        else:
+            data_spans.extend(col_spans)
+
+    if not data_spans:
+        return [], label_col_x_max
+
+    # Try vector vertical grid intervals in the Effect header area strictly right of label columns
+    hdr_v_xs = [
+        x
+        for x, y0, y1 in v_segs
+        if x >= (label_col_x_max - 1.5) and y0 < header_scan_y_max and (y1 - y0) >= 35.0
+    ]
+    merged_vx = _merge_close_coords(hdr_v_xs, tol=2.0)
+    col_intervals = [
+        (merged_vx[i], merged_vx[i + 1])
+        for i in range(len(merged_vx) - 1)
+        if 6.0 <= (merged_vx[i + 1] - merged_vx[i]) <= 120.0
+    ]
+
+    # Use grid intervals when >=3 intervals cover >=60% of data_spans
+    if len(col_intervals) >= 3:
+        grid_min_x, grid_max_x = col_intervals[0][0] - 1.5, col_intervals[-1][1] + 1.5
+        covered = sum(
+            1
+            for s in data_spans
+            if grid_min_x <= ((float(s["bbox"][0]) + float(s["bbox"][2])) / 2.0) <= grid_max_x
+        )
+        if covered >= max(3, int(len(data_spans) * 0.6)):
+            buckets: list[list[dict[str, Any]]] = [[] for _ in col_intervals]
+            for sp in data_spans:
+                sx = (float(sp["bbox"][0]) + float(sp["bbox"][2])) / 2.0
+                sy = (float(sp["bbox"][1]) + float(sp["bbox"][3])) / 2.0
+                cell_xr = _find_cell_span_1d(sx, sy, v_segs, max_span=120.0)
+                if cell_xr is not None:
+                    hx0, hx1 = cell_xr
+                    assigned = False
+                    for idx, (cx0, cx1) in enumerate(col_intervals):
+                        c_mid = (cx0 + cx1) / 2.0
+                        if (hx0 - 1.0) <= c_mid <= (hx1 + 1.0):
+                            buckets[idx].append(sp)
+                            assigned = True
+                    if assigned:
+                        continue
+                for idx, (cx0, cx1) in enumerate(col_intervals):
+                    if (cx0 - 1.5) <= sx <= (cx1 + 1.5):
+                        buckets[idx].append(sp)
+                        break
+
+            effect_cols: list[dict[str, Any]] = []
+            for (cx0, cx1), col_spans in zip(col_intervals, buckets):
+                if not col_spans or _is_header_label_only_column(col_spans):
+                    continue
+                effect_cols.append(
+                    _parse_effect_column_spans(
+                        col_spans,
+                        len(effect_cols),
+                        (cx0 + cx1) / 2.0,
+                        x0=cx0,
+                        x1=cx1,
+                    )
+                )
+            if effect_cols:
+                return effect_cols, label_col_x_max
+
+    # Fallback clustering for ungridded / sparsely-gridded sheets
+    dx_mids = [(float(s["bbox"][0]) + float(s["bbox"][2])) / 2.0 for s in data_spans]
+    sorted_x = sorted(dx_mids)
+    diffs = sorted(b - a for a, b in zip(sorted_x, sorted_x[1:]) if (b - a) >= 3.0)
+    x_tol = min(14.0, max(4.0, diffs[0] * 0.42)) if diffs else 14.0
+    col_clusters = sorted(
+        _cluster_1d(dx_mids, tol=x_tol),
+        key=lambda grp: sum(dx_mids[i] for i in grp) / len(grp),
+    )
+    effect_cols = []
+    centers = [sum(dx_mids[i] for i in grp) / len(grp) for grp in col_clusters]
+    half_pitch = (
+        sorted(centers[i + 1] - centers[i] for i in range(len(centers) - 1))[0] / 2.0
+        if len(centers) >= 2
+        else 20.0
+    )
+    half_pitch = max(6.0, min(40.0, half_pitch))
+    for grp, xc in zip(col_clusters, centers):
+        col_spans = [data_spans[i] for i in grp]
+        if _is_header_label_only_column(col_spans):
+            continue
+        effect_cols.append(
+            _parse_effect_column_spans(
+                col_spans,
+                len(effect_cols),
+                xc,
+                x0=xc - half_pitch,
+                x1=xc + half_pitch,
+            )
+        )
+    return effect_cols, label_col_x_max
+
+
+def _merge_adjacent_voting_spans(spans: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Combine adjacent '≥'/'<=' symbol and numeral spans on the same horizontal row."""
+    if len(spans) <= 1:
+        return list(spans)
+    ordered = sorted(
+        spans,
+        key=lambda s: (round((float(s["bbox"][1]) + float(s["bbox"][3])) / 4.0), float(s["bbox"][0])),
+    )
+    merged: list[dict[str, Any]] = []
+    idx = 0
+    while idx < len(ordered):
+        cur = ordered[idx]
+        cur_txt = str(cur["text"]).strip()
+        if cur_txt in ("≥", ">=", "≤", "<=") and idx + 1 < len(ordered):
+            nxt = ordered[idx + 1]
+            nxt_txt = str(nxt["text"]).strip()
+            cy1 = (float(cur["bbox"][1]) + float(cur["bbox"][3])) / 2.0
+            cy2 = (float(nxt["bbox"][1]) + float(nxt["bbox"][3])) / 2.0
+            dx = float(nxt["bbox"][0]) - float(cur["bbox"][2])
+            if abs(cy1 - cy2) <= 3.0 and -1.5 <= dx <= 8.0 and re.fullmatch(r"\d+(?:oo\d+)?", nxt_txt, re.I):
+                merged.append(
+                    {
+                        "text": f"{cur_txt} {nxt_txt}",
+                        "bbox": [
+                            min(float(cur["bbox"][0]), float(nxt["bbox"][0])),
+                            min(float(cur["bbox"][1]), float(nxt["bbox"][1])),
+                            max(float(cur["bbox"][2]), float(nxt["bbox"][2])),
+                            max(float(cur["bbox"][3]), float(nxt["bbox"][3])),
+                        ],
+                    }
+                )
+                idx += 2
+                continue
+        merged.append(cur)
+        idx += 1
+    return merged
+
+
 def _parse_cause_row_spans(
     spans: Sequence[dict[str, Any]],
     row_idx: int,
     y_center: float,
+    *,
+    rev_x_range: tuple[float, float] | None = None,
+    zone_x_range: tuple[float, float] | None = None,
+    row_no_x_min: float | None = None,
 ) -> dict[str, Any]:
     """Classify horizontal spans belonging to one left-hand C&E Cause row."""
-    # Sort top-to-bottom within tight horizontal zones or left-to-right across columns
     sorted_spans = sorted(spans, key=lambda s: (float(s["bbox"][0]), float(s["bbox"][1])))
     texts = [str(s["text"]).strip() for s in sorted_spans if str(s["text"]).strip()]
 
-    group = ""
+    group_spans: list[dict[str, Any]] = []
     pid = ""
     cause_tag = ""
     voting = ""
+    signal_level = ""
     note_refs: list[str] = []
     desc_spans: list[dict[str, Any]] = []
 
@@ -824,14 +1318,26 @@ def _parse_cause_row_spans(
         txt = str(sp["text"]).strip()
         if not txt:
             continue
-        if _GROUP_CODE_RE.fullmatch(txt):
-            group = txt
+        xm = (float(sp["bbox"][0]) + float(sp["bbox"][2])) / 2.0
+
+        if rev_x_range is not None and rev_x_range[0] <= xm <= rev_x_range[1] and re.fullmatch(r"[A-Z0-9]{1,3}", txt, re.I):
             continue
-        if _PID_RE.fullmatch(txt):
+        if row_no_x_min is not None and xm >= row_no_x_min and re.fullmatch(r"\d{1,3}", txt):
+            continue
+        if zone_x_range is not None and zone_x_range[0] <= xm <= zone_x_range[1]:
+            group_spans.append(sp)
+            continue
+        if _GROUP_CODE_RE.fullmatch(txt) or _FIRE_ZONE_GROUP_RE.fullmatch(txt):
+            group_spans.append(sp)
+            continue
+        if _PID_CELL_RE.fullmatch(txt):
             pid = txt.upper()
             continue
         if _VOTING_RE.fullmatch(txt):
             voting = txt
+            continue
+        if _SIGNAL_LEVEL_RE.fullmatch(txt) and xm > (zone_x_range[1] if zone_x_range else 0.0):
+            signal_level = txt.upper()
             continue
         note_match = _NOTE_REF_RE.fullmatch(txt)
         if note_match or (txt.upper().startswith("NOTE") and _NOTE_REF_RE.search(txt)):
@@ -839,10 +1345,13 @@ def _parse_cause_row_spans(
             if nm:
                 note_refs.append(f"NOTE {nm.group(1)}")
             continue
-        if not cause_tag and _TAG_TOKEN_RE.fullmatch(txt) and not _PID_RE.fullmatch(txt):
+        if not cause_tag and _TAG_TOKEN_RE.fullmatch(txt) and not _PID_CELL_RE.fullmatch(txt):
             cause_tag = txt
             continue
         desc_spans.append(sp)
+
+    group_ordered = sorted(group_spans, key=lambda s: (float(s["bbox"][1]), float(s["bbox"][0])))
+    group = " ".join(str(s["text"]).strip() for s in group_ordered).strip()
 
     # Order wrapped description lines top-to-bottom then left-to-right
     desc_spans_ordered = sorted(desc_spans, key=lambda s: (float(s["bbox"][1]), float(s["bbox"][0])))
@@ -851,11 +1360,18 @@ def _parse_cause_row_spans(
     if not cause_tag:
         for txt in texts:
             m = _TAG_TOKEN_RE.search(txt)
-            if m and not _PID_RE.fullmatch(m.group(0)) and not _GROUP_CODE_RE.fullmatch(m.group(0)):
+            if (
+                m
+                and not _PID_CELL_RE.fullmatch(m.group(0))
+                and not _PID_RE.fullmatch(m.group(0))
+                and not _GROUP_CODE_RE.fullmatch(m.group(0))
+                and not _FIRE_ZONE_GROUP_RE.fullmatch(m.group(0))
+            ):
                 cause_tag = m.group(0)
                 break
     if not cause_tag:
         cause_tag = description or pid or f"CAUSE_ROW_{row_idx + 1}"
+    note_refs = _collect_note_refs_from_texts(texts, note_refs)
 
     return {
         "row_index": row_idx + 1,
@@ -865,6 +1381,7 @@ def _parse_cause_row_spans(
         "cause_tag": cause_tag,
         "description": description,
         "voting": voting,
+        "signal_level": signal_level,
         "note_refs": note_refs,
         "raw_labels": texts,
         "bbox": [
@@ -876,15 +1393,282 @@ def _parse_cause_row_spans(
     }
 
 
+def _detect_cause_table_geometry(
+    horiz_spans: Sequence[dict[str, Any]],
+    v_segs: Sequence[tuple[float, float, float]],
+    matrix_x_min: float,
+    header_y_max: float,
+    page_height: float,
+) -> dict[str, Any]:
+    """Detect Cause header bounds, body y-bounds, and REV/FIRE ZONE/ROW NO column x-ranges."""
+    cue_spans: list[dict[str, Any]] = []
+    rev_span: dict[str, Any] | None = None
+    zone_span: dict[str, Any] | None = None
+    tag_name_span: dict[str, Any] | None = None
+    logic_span: dict[str, Any] | None = None
+
+    for s in horiz_spans:
+        xm = (float(s["bbox"][0]) + float(s["bbox"][2])) / 2.0
+        ym = (float(s["bbox"][1]) + float(s["bbox"][3])) / 2.0
+        if xm > matrix_x_min + 10.0:
+            continue
+        if not (max(0.0, header_y_max - 45.0) <= ym <= header_y_max + 45.0):
+            continue
+        norm = re.sub(r"\s+", " ", str(s["text"]).strip().rstrip(".:")).upper()
+        if norm == "REV":
+            rev_span = s
+        if norm in _CAUSE_TABLE_HEADER_CUES:
+            cue_spans.append(s)
+            if "ZONE" in norm:
+                zone_span = s
+            elif norm == "TAG NAME":
+                tag_name_span = s
+            elif norm in ("LOGIC", "VOTING"):
+                logic_span = s
+
+    cause_hdr_y_max = max((float(s["bbox"][3]) for s in cue_spans), default=header_y_max)
+    body_y_min = max(header_y_max - 2.0, cause_hdr_y_max + 2.0)
+
+    # Detect bottom Notes heading or page footer inside page body
+    note_y_top: float | None = None
+    for s in horiz_spans:
+        ym = (float(s["bbox"][1]) + float(s["bbox"][3])) / 2.0
+        if ym <= body_y_min + 30.0:
+            continue
+        txt = str(s["text"]).strip()
+        if _NOTE_SECTION_RE.match(txt) or _PAGE_NUM_FOOTER_RE.match(txt):
+            y0 = float(s["bbox"][1])
+            note_y_top = y0 if note_y_top is None else min(note_y_top, y0)
+        elif txt.upper() in ("COMPANY", "COMPANY:", "PROJECT TITLE:", "CONTRACTOR", "DOCUMENT TITLE:"):
+            y0 = float(s["bbox"][1])
+            note_y_top = y0 if note_y_top is None else min(note_y_top, y0)
+
+    long_grid_bottoms = [
+        y1
+        for x, y0, y1 in v_segs
+        if x >= 100.0
+        and y0 < body_y_min + 35.0
+        and y1 > body_y_min + 60.0
+        and y1 < (page_height - 35.0)
+        and (y1 - y0) >= 80.0
+    ]
+    grid_y_max = max(long_grid_bottoms) if long_grid_bottoms else None
+
+    if note_y_top is not None:
+        body_y_max = min(note_y_top - 1.5, (grid_y_max + 2.5) if grid_y_max else (page_height - 55.0))
+    elif grid_y_max is not None:
+        body_y_max = grid_y_max + 2.5
+    else:
+        body_y_max = page_height - 95.0
+
+    # Derive left-table column ranges for REV, FIRE ZONE NO, and ROW NO
+    rev_x_range: tuple[float, float] | None = None
+    if rev_span is not None:
+        rx0, rx1 = float(rev_span["bbox"][0]), float(rev_span["bbox"][2])
+        rev_x_range = (rx0 - 8.0, rx1 + 8.0)
+
+    zone_x_range: tuple[float, float] | None = None
+    if zone_span is not None:
+        zx0, zx1 = float(zone_span["bbox"][0]), float(zone_span["bbox"][2])
+        zx_mid = (zx0 + zx1) / 2.0
+        # Find enclosing vertical borders around the Fire Zone column in the body
+        body_vx = [
+            x
+            for x, y0, y1 in v_segs
+            if x < matrix_x_min - 50.0 and y1 > body_y_min + 20.0 and (y1 - y0) >= 30.0
+        ]
+        left_b = max((x for x in body_vx if x < zx_mid), default=(rev_x_range[1] if rev_x_range else zx0 - 15.0))
+        right_b = min((x for x in body_vx if x > zx_mid), default=(float(tag_name_span["bbox"][0]) - 2.0 if tag_name_span else zx1 + 12.0))
+        if right_b > left_b:
+            zone_x_range = (left_b - 1.0, right_b + 1.0)
+        else:
+            zone_x_range = (zx0 - 12.0, zx1 + 12.0)
+
+    # Detect narrow row-index strip (1, 2, 3...) just left of matrix_x_min when present
+    row_no_probe_min = (
+        max(float(logic_span["bbox"][2]) + 10.0, matrix_x_min - 28.0)
+        if logic_span is not None
+        else (matrix_x_min - 26.0)
+    )
+    near_ints = [
+        s
+        for s in horiz_spans
+        if row_no_probe_min <= ((float(s["bbox"][0]) + float(s["bbox"][2])) / 2.0) < matrix_x_min
+        and body_y_min <= ((float(s["bbox"][1]) + float(s["bbox"][3])) / 2.0) <= body_y_max
+        and re.fullmatch(r"\d{1,3}", str(s["text"]).strip())
+    ]
+    row_no_x_min: float | None = row_no_probe_min if len(near_ints) >= 4 else None
+
+    return {
+        "body_y_min": body_y_min,
+        "body_y_max": body_y_max,
+        "rev_x_range": rev_x_range,
+        "zone_x_range": zone_x_range,
+        "row_no_x_min": row_no_x_min,
+    }
+
+
+def _build_ce_cause_rows(
+    left_spans: Sequence[dict[str, Any]],
+    h_segs: Sequence[tuple[float, float, float]],
+    *,
+    matrix_x_min: float,
+    geom: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build Cause rows from fine horizontal grid lines (propagating merged cells) or y-clustering."""
+    if not left_spans:
+        return []
+
+    left_spans = _merge_adjacent_voting_spans(left_spans)
+    body_y_min = float(geom["body_y_min"])
+    body_y_max = float(geom["body_y_max"])
+    zone_x_range = geom["zone_x_range"]
+    rev_x_range = geom["rev_x_range"]
+    row_no_x_min = geom["row_no_x_min"]
+
+    # Probe TAG NAME / TAG NO horizontal dividers (narrow LOGIC/ZONE cols may omit per-row borders)
+    tag_probe_x = (zone_x_range[1] + 45.0) if zone_x_range else (matrix_x_min * 0.55)
+    probe_h_ys = [
+        y
+        for y, x0, x1 in h_segs
+        if (body_y_min - 8.0) <= y <= (body_y_max + 2.0)
+        and (x1 - x0) >= 40.0
+        and x0 <= tag_probe_x <= x1
+    ]
+    merged_ry = _merge_close_coords(probe_h_ys, tol=1.5)
+    fine_intervals = [
+        (merged_ry[i], merged_ry[i + 1])
+        for i in range(len(merged_ry) - 1)
+        if 4.5 <= (merged_ry[i + 1] - merged_ry[i]) <= 32.0
+    ]
+
+    if len(fine_intervals) >= 4:
+        row_buckets: list[list[dict[str, Any]]] = [[] for _ in fine_intervals]
+        for sp in left_spans:
+            sx = (float(sp["bbox"][0]) + float(sp["bbox"][2])) / 2.0
+            sy = (float(sp["bbox"][1]) + float(sp["bbox"][3])) / 2.0
+            cell_yr = _find_cell_span_1d(sy, sx, h_segs, max_span=400.0)
+            if cell_yr is not None:
+                cy0, cy1 = cell_yr
+                covered = [
+                    idx
+                    for idx, (ry0, ry1) in enumerate(fine_intervals)
+                    if (cy0 - 0.8) <= ((ry0 + ry1) / 2.0) <= (cy1 + 0.8)
+                ]
+                if covered:
+                    for idx in covered:
+                        row_buckets[idx].append(sp)
+                    continue
+            for idx, (ry0, ry1) in enumerate(fine_intervals):
+                if (ry0 - 1.0) <= sy <= (ry1 + 1.0):
+                    row_buckets[idx].append(sp)
+                    break
+
+        cause_rows: list[dict[str, Any]] = []
+        for (ry0, ry1), r_spans in zip(fine_intervals, row_buckets):
+            if not r_spans:
+                continue
+            joined_upper = " ".join(str(s["text"]).upper() for s in r_spans)
+            if "CAUSE DESCRIPTION" in joined_upper or "CAUSE TAG" in joined_upper:
+                continue
+            row = _parse_cause_row_spans(
+                r_spans,
+                len(cause_rows),
+                (ry0 + ry1) / 2.0,
+                rev_x_range=rev_x_range,
+                zone_x_range=zone_x_range,
+                row_no_x_min=row_no_x_min,
+            )
+            # Skip spacer rows with neither an extracted tag/desc beyond inherited zone/rev
+            if not row["description"] and row["cause_tag"].startswith("CAUSE_ROW_"):
+                continue
+            row["y0"] = round(ry0, 2)
+            row["y1"] = round(ry1, 2)
+            cause_rows.append(row)
+        if cause_rows:
+            return cause_rows
+
+    # Fallback clustering for ungridded or tall multi-line Cause rows
+    left_y_mids = [(float(s["bbox"][1]) + float(s["bbox"][3])) / 2.0 for s in left_spans]
+    row_clusters = sorted(
+        _cluster_1d(left_y_mids, tol=14.0),
+        key=lambda grp: sum(left_y_mids[i] for i in grp) / len(grp),
+    )
+    cause_rows = []
+    for grp in row_clusters:
+        r_spans = [left_spans[i] for i in grp]
+        y_center = sum(left_y_mids[i] for i in grp) / len(grp)
+        joined_upper = " ".join(str(s["text"]).upper() for s in r_spans)
+        if "CAUSE DESCRIPTION" in joined_upper or "CAUSE TAG" in joined_upper:
+            continue
+        cause_rows.append(
+            _parse_cause_row_spans(
+                r_spans,
+                len(cause_rows),
+                y_center,
+                rev_x_range=rev_x_range,
+                zone_x_range=zone_x_range,
+                row_no_x_min=row_no_x_min,
+            )
+        )
+    return cause_rows
+
+
+def _match_effect_col(
+    mx: float,
+    effect_cols: Sequence[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Match a mark x-coordinate to its Effect column via interval containment or tight nearest center."""
+    for col in effect_cols:
+        if (float(col["x0"]) - 1.5) <= mx <= (float(col["x1"]) + 1.5):
+            return col
+    nearest = min(effect_cols, key=lambda c: abs(mx - c["x_center"]))
+    max_half = max(16.0, min(38.0, (float(nearest["x1"]) - float(nearest["x0"])) * 0.75))
+    return nearest if abs(mx - nearest["x_center"]) <= max_half else None
+
+
+def _match_cause_rows(
+    mx: float,
+    my: float,
+    cause_rows: Sequence[dict[str, Any]],
+    h_segs: Sequence[tuple[float, float, float]],
+    *,
+    body_y_min: float,
+    body_y_max: float,
+    row_tol: float,
+) -> list[dict[str, Any]]:
+    """Match a mark coordinate to one or multiple merged Cause rows using cell horizontal borders."""
+    cell_yr = _find_cell_span_1d(my, mx, h_segs, max_span=250.0)
+    if cell_yr is not None:
+        cy0, cy1 = cell_yr
+        if cy0 >= (body_y_min - 8.0) and cy1 <= (body_y_max + 8.0):
+            covered = [
+                r
+                for r in cause_rows
+                if (cy0 - 0.8) <= float(r["y_center"]) <= (cy1 + 0.8)
+            ]
+            if covered:
+                return covered
+
+    nearest = min(cause_rows, key=lambda r: abs(my - float(r["y_center"])))
+    if abs(my - float(nearest["y_center"])) <= row_tol:
+        return [nearest]
+    return []
+
+
 def extract_rotated_ce_matrix(
     page: fitz.Page,
     page_number: int,
     legend_context: LegendContext | None = None,
+    *,
+    prune_empty_effects: bool = False,
 ) -> PageExtractionResult:
     """Reconstruct bidirectional Cause->Effect and Effect<-Cause records from rotated C&E sheets."""
     _, metrics = profile_pdf_page(page)
-    text_dict = page.get_text("dict")
-    words = page.get_text("words")
+    text_dict = _get_visual_text_dict(page)
+    words = _get_visual_words(page)
+    drawings = _get_visual_drawings(page)
+    v_segs, h_segs = _extract_grid_segments(drawings)
 
     if legend_context is None:
         legend_context = extract_legend_context([page], page_modes={1: "matrix_rotated_headers"})
@@ -915,55 +1699,56 @@ def extract_rotated_ce_matrix(
                 elif is_horiz:
                     horiz_spans.append(item)
 
-    # 1. Cluster rotated Effect column spans by x-center (dx <= 14 pt)
-    rot_x_mids = [(float(s["bbox"][0]) + float(s["bbox"][2])) / 2.0 for s in rotated_spans]
-    col_clusters = sorted(
-        _cluster_1d(rot_x_mids, tol=14.0),
-        key=lambda grp: sum(rot_x_mids[i] for i in grp) / len(grp),
-    )
-    effect_cols: list[dict[str, Any]] = []
-    for c_idx, grp in enumerate(col_clusters):
-        col_spans = [rotated_spans[i] for i in grp]
-        x_center = sum(rot_x_mids[i] for i in grp) / len(grp)
-        effect_cols.append(_parse_effect_column_spans(col_spans, c_idx, x_center))
+    # 1. Group rotated Effect spans into data columns (using grid borders when present)
+    max_rot_y = max((float(s["bbox"][3]) for s in rotated_spans), default=280.0)
+    effect_cols, label_col_x_max = _build_ce_effect_columns(rotated_spans, v_segs, max_rot_y)
 
     header_y_max = max((c["bbox"][3] for c in effect_cols), default=280.0)
-    matrix_x_min = (min(c["x_center"] for c in effect_cols) - 40.0) if effect_cols else float(page.rect.width) * 0.4
+    if effect_cols:
+        has_grid_cols = label_col_x_max > 0.0 or any((c["x1"] - c["x0"]) < 35.0 for c in effect_cols)
+        matrix_x_min = (
+            min(c["x0"] for c in effect_cols)
+            if has_grid_cols
+            else (min(c["x_center"] for c in effect_cols) - 40.0)
+        )
+    else:
+        matrix_x_min = page_width * 0.4
 
-    # 2. Identify horizontal matrix marks (X, O, R, P, B) inside grid body
+    geom = _detect_cause_table_geometry(
+        horiz_spans,
+        v_segs,
+        matrix_x_min=matrix_x_min,
+        header_y_max=header_y_max,
+        page_height=page_height,
+    )
+    body_y_min = float(geom["body_y_min"])
+    body_y_max = float(geom["body_y_max"])
+
+    # 2. Identify horizontal matrix marks (case-insensitive X, O, R, P, B) inside grid body
     candidate_marks = [
         w
         for w in words
-        if str(w[4]).strip() in ACTION_MARKS
-        and ((float(w[0]) + float(w[2])) / 2.0) >= (matrix_x_min - 5.0)
-        and ((float(w[1]) + float(w[3])) / 2.0) > (header_y_max - 5.0)
+        if str(w[4]).strip().upper() in ACTION_MARKS
+        and ((float(w[0]) + float(w[2])) / 2.0) >= (matrix_x_min - 2.0)
+        and (body_y_min - 2.0) <= ((float(w[1]) + float(w[3])) / 2.0) <= (body_y_max + 2.0)
     ]
 
-    # 3. Cluster left-hand horizontal Cause spans by y-center (dy <= 14 pt)
+    # 3. Build left-hand horizontal Cause rows (using fine row grid + merged cell propagation when present)
     left_spans = [
         s
         for s in horiz_spans
-        if float(s["bbox"][2]) <= matrix_x_min + 12.0
-        and ((float(s["bbox"][1]) + float(s["bbox"][3])) / 2.0) > (header_y_max - 5.0)
-        and ((float(s["bbox"][1]) + float(s["bbox"][3])) / 2.0) < float(page.rect.height) - 95.0
+        if ((float(s["bbox"][0]) + float(s["bbox"][2])) / 2.0) <= matrix_x_min + 4.0
+        and float(s["bbox"][2]) <= matrix_x_min + 12.0
+        and (body_y_min - 2.0) <= ((float(s["bbox"][1]) + float(s["bbox"][3])) / 2.0) <= body_y_max
     ]
-    left_y_mids = [(float(s["bbox"][1]) + float(s["bbox"][3])) / 2.0 for s in left_spans]
-    row_clusters = sorted(
-        _cluster_1d(left_y_mids, tol=14.0),
-        key=lambda grp: sum(left_y_mids[i] for i in grp) / len(grp),
+    cause_rows = _build_ce_cause_rows(
+        left_spans,
+        h_segs,
+        matrix_x_min=matrix_x_min,
+        geom=geom,
     )
 
-    cause_rows: list[dict[str, Any]] = []
-    for grp in row_clusters:
-        r_spans = [left_spans[i] for i in grp]
-        y_center = sum(left_y_mids[i] for i in grp) / len(grp)
-        joined_upper = " ".join(str(s["text"]).upper() for s in r_spans)
-        # Skip the column header row for the left-hand table (GROUP | P&ID | CAUSE DESCRIPTION | ...)
-        if "CAUSE DESCRIPTION" in joined_upper or "CAUSE TAG" in joined_upper:
-            continue
-        cause_rows.append(_parse_cause_row_spans(r_spans, len(cause_rows), y_center))
-
-    # 4. Intersect marks with nearest (CauseRow, EffectColumn)
+    # 4. Intersect marks with EffectColumn and CauseRow(s) (supporting vertically merged mark cells)
     col_hits: dict[int, list[dict[str, Any]]] = {c["col_index"]: [] for c in effect_cols}
     row_hits: dict[int, list[dict[str, Any]]] = {r["row_index"]: [] for r in cause_rows}
 
@@ -974,45 +1759,71 @@ def extract_rotated_ce_matrix(
                 for i in range(len(cause_rows) - 1)
             )
             median_pitch = pitches[len(pitches) // 2]
-            row_tol = max(22.0, min(60.0, median_pitch * 0.60))
+            row_tol = max(12.0, min(60.0, median_pitch * 0.65))
         else:
             row_tol = 28.0
 
+        seen_pairs: set[tuple[int, int]] = set()
         for mark_word in candidate_marks:
             mx = (float(mark_word[0]) + float(mark_word[2])) / 2.0
             my = (float(mark_word[1]) + float(mark_word[3])) / 2.0
-            mark_sym = str(mark_word[4]).strip()
+            raw_sym = str(mark_word[4]).strip()
+            norm_sym = raw_sym.upper()
 
-            nearest_col = min(effect_cols, key=lambda c: abs(mx - c["x_center"]))
-            nearest_row = min(cause_rows, key=lambda r: abs(my - r["y_center"]))
-
-            if abs(mx - nearest_col["x_center"]) > 38.0 or abs(my - nearest_row["y_center"]) > row_tol:
+            matched_col = _match_effect_col(mx, effect_cols)
+            if matched_col is None:
                 continue
 
-            meaning = legend_context.symbol_map.get(mark_sym, "") if legend_context else ""
-            row_hits[nearest_row["row_index"]].append(
-                {
-                    "effect_tag": nearest_col["effect_tag"],
-                    "effect_description": nearest_col["description"],
-                    "pid": nearest_col["pid"],
-                    "action": nearest_col["action"],
-                    "mark": mark_sym,
-                    "mark_meaning": meaning,
-                    "notes": nearest_col["note_refs"],
-                }
+            matched_rows = _match_cause_rows(
+                mx,
+                my,
+                cause_rows,
+                h_segs,
+                body_y_min=body_y_min,
+                body_y_max=body_y_max,
+                row_tol=row_tol,
             )
-            col_hits[nearest_col["col_index"]].append(
-                {
-                    "cause_tag": nearest_row["cause_tag"],
-                    "group": nearest_row["group"],
-                    "description": nearest_row["description"],
-                    "pid": nearest_row["pid"],
-                    "voting": nearest_row["voting"],
-                    "mark": mark_sym,
-                    "mark_meaning": meaning,
-                    "notes": nearest_row["note_refs"],
-                }
+            if not matched_rows:
+                continue
+
+            meaning = (
+                legend_context.symbol_map.get(raw_sym)
+                or legend_context.symbol_map.get(norm_sym)
+                or ""
+                if legend_context
+                else ""
             )
+
+            for m_row in matched_rows:
+                pair = (m_row["row_index"], matched_col["col_index"])
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+
+                row_hits[m_row["row_index"]].append(
+                    {
+                        "effect_tag": matched_col["effect_tag"],
+                        "effect_description": matched_col["description"],
+                        "pid": matched_col["pid"],
+                        "action": matched_col["action"],
+                        "mark": norm_sym,
+                        "mark_meaning": meaning,
+                        "notes": matched_col["note_refs"],
+                    }
+                )
+                col_hits[matched_col["col_index"]].append(
+                    {
+                        "cause_tag": m_row["cause_tag"],
+                        "group": m_row["group"],
+                        "description": m_row["description"],
+                        "pid": m_row["pid"],
+                        "voting": m_row["voting"],
+                        "signal_level": m_row.get("signal_level", ""),
+                        "mark": norm_sym,
+                        "mark_meaning": meaning,
+                        "notes": m_row["note_refs"],
+                    }
+                )
 
     sheet_title = f"Process Cause & Effect Matrix (Page {page_number})"
     for s in horiz_spans:
@@ -1046,8 +1857,10 @@ def extract_rotated_ce_matrix(
                 f"{eff['effect_tag']} ({eff['effect_description']}{act_part}) -> Mark '{eff['mark']}'{meaning_part}"
             )
 
+        sig_lvl = crow.get("signal_level") or ""
+        lvl_part = f" | LEVEL: {sig_lvl}" if sig_lvl else ""
         lines = [
-            f"CAUSE TAG: {crow['cause_tag']} | GROUP: {crow['group']} | P&ID: {crow['pid']} | VOTING: {crow['voting'] or 'N/A'}",
+            f"CAUSE TAG: {crow['cause_tag']} | GROUP: {crow['group']} | P&ID: {crow['pid']} | VOTING: {crow['voting'] or 'N/A'}{lvl_part}",
             f"Cause Description: {crow['description']}",
             f"Triggered Effects ({len(effects)}): " + ("; ".join(eff_strs) if eff_strs else "None"),
         ]
@@ -1070,6 +1883,7 @@ def extract_rotated_ce_matrix(
                     "group": crow["group"],
                     "pid": crow["pid"],
                     "voting": crow["voting"],
+                    "signal_level": sig_lvl,
                     "description": crow["description"],
                     "note_refs": all_note_refs,
                     "inlined_notes": inlined_notes,
@@ -1079,9 +1893,12 @@ def extract_rotated_ce_matrix(
         )
         md_sections.append(f"### Cause: {crow['cause_tag']}\n{summary}")
 
+    has_any_col_hits = any(bool(v) for v in col_hits.values())
     md_sections.append("## Reverse Effect-to-Cause Mapping")
     for ecol in effect_cols:
         causes = col_hits.get(ecol["col_index"], [])
+        if prune_empty_effects and has_any_col_hits and not causes:
+            continue
         all_note_refs = list(ecol["note_refs"])
         for c_item in causes:
             for nr in c_item["notes"]:
@@ -1092,7 +1909,8 @@ def extract_rotated_ce_matrix(
         cause_strs: list[str] = []
         for c_item in causes:
             meaning_part = f" ({c_item['mark_meaning']})" if c_item["mark_meaning"] else ""
-            vote_part = f" [{c_item['voting']}]" if c_item["voting"] else ""
+            qualifiers = [q for q in (c_item.get("signal_level"), c_item.get("voting")) if q]
+            vote_part = f" [{' '.join(qualifiers)}]" if qualifiers else ""
             cause_strs.append(
                 f"{c_item['cause_tag']} ({c_item['group']}: {c_item['description']}{vote_part}) -> Mark '{c_item['mark']}'{meaning_part}"
             )
@@ -1142,8 +1960,8 @@ def extract_rotated_ce_matrix(
 def extract_cad_logic_sheet(page: fitz.Page, page_number: int) -> PageExtractionResult:
     """Group POU title, cross-references, inputs (From), logic blocks, and outputs (To) on CAD logic sheets."""
     _, metrics = profile_pdf_page(page)
-    text_dict = page.get_text("dict")
-    raw_text = page.get_text("text") or ""
+    text_dict = _get_visual_text_dict(page)
+    raw_text = _get_visual_text_lines(page)
     width = float(page.rect.width)
     height = float(page.rect.height)
 
@@ -1528,7 +2346,7 @@ def _build_legend_page_result(
     legend_ctx: LegendContext,
 ) -> PageExtractionResult:
     """Create a PageExtractionResult and EngineeringPageRecord for a Legend & Notes page."""
-    raw_text = (page.get_text("text") or "").strip()
+    raw_text = _get_visual_text_lines(page).strip()
     first_line = next((ln.strip() for ln in raw_text.splitlines() if ln.strip()), f"Legend & Notes (Page {page_number})")
     summary = legend_ctx.format_summary() or raw_text
     tags = _extract_record_tags(f"{summary}\n{raw_text}")
@@ -1589,6 +2407,7 @@ def extract_engineering_pdf(
             return None
 
         legend_ctx = extract_legend_context(doc, page_modes=page_modes)
+        matrix_page_count = sum(1 for m in page_modes.values() if m == "matrix_rotated_headers")
 
         page_results: list[PageExtractionResult] = []
         for idx in range(page_count):
@@ -1598,7 +2417,12 @@ def extract_engineering_pdf(
             if mode == "coord_grid_schedule":
                 res = extract_coord_grid_schedule(page, pno)
             elif mode == "matrix_rotated_headers":
-                res = extract_rotated_ce_matrix(page, pno, legend_context=legend_ctx)
+                res = extract_rotated_ce_matrix(
+                    page,
+                    pno,
+                    legend_context=legend_ctx,
+                    prune_empty_effects=(matrix_page_count >= 2),
+                )
             elif mode == "cad_logic_diagram":
                 res = extract_cad_logic_sheet(page, pno)
             elif mode == "exploded_cad_ocr":
@@ -1606,7 +2430,7 @@ def extract_engineering_pdf(
             elif mode == "document_legend_notes":
                 res = _build_legend_page_result(page, pno, page_metrics[pno], legend_ctx)
             else:
-                prose_text = (page.get_text("text") or "").strip()
+                prose_text = _get_visual_text_lines(page).strip()
                 md = f"<!-- page: {pno} -->\n{prose_text}\n" if prose_text else f"<!-- page: {pno} -->\n"
                 res = PageExtractionResult(
                     page_number=pno,
