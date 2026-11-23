@@ -360,7 +360,10 @@ class IngestionOrchestrator:
                     if prefer_pymupdf4llm is True
                     else ("docling" if prefer_pymupdf4llm is False else None)
                 )
-                is_mode_upgrade = requested_engine == "docling" and existing.parsing_engine != "docling"
+                is_mode_upgrade = (
+                    requested_engine == "docling"
+                    and existing.parsing_engine not in {"docling", "engineering_cad"}
+                )
                 if not is_mode_upgrade:
                     return existing
                 force_reparse = True
@@ -508,7 +511,7 @@ class IngestionOrchestrator:
                         )
                         mismatch = (
                             (effective_prefer is True and cached_engine != "pymupdf4llm")
-                            or (effective_prefer is False and cached_engine != "docling")
+                            or (effective_prefer is False and cached_engine not in {"docling", "engineering_cad"})
                         )
                         if mismatch:
                             parse_result = None

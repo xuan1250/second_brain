@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   FileText,
   Filter,
+  Layers,
   Loader2,
   Pause,
   Play,
@@ -268,6 +269,18 @@ function EngineBadge({ doc }: { doc: DocumentItem }) {
       >
         <Zap className="h-2.5 w-2.5 text-sky-400" />
         Fast CPU
+      </span>
+    );
+  }
+
+  if (doc.parsing_engine === "engineering_cad") {
+    return (
+      <span
+        title="Engineering CAD Geometry & OCR Engine"
+        className="inline-flex items-center gap-1 rounded-full bg-cyan-500/15 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-300"
+      >
+        <Layers className="h-2.5 w-2.5 text-cyan-400" />
+        Engineering CAD
       </span>
     );
   }

@@ -60,6 +60,7 @@ async def init_qdrant_collection(
         ("effective_year", models.PayloadSchemaType.INTEGER),
         ("is_current", models.PayloadSchemaType.BOOL),
         ("associated_entities", models.PayloadSchemaType.KEYWORD),
+        ("record_type", models.PayloadSchemaType.KEYWORD),
     ]
 
     for field, schema in payload_indexes:

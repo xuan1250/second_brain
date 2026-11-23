@@ -18,6 +18,8 @@ frontend/.gitkeep
 .agentkit/
 .agents/
 .claude/
+.codex/
+.dsh/
 plans/
 AGENTS.md
 CLAUDE.md

@@ -35,6 +35,24 @@ def _lexical_overlap_score(query: str, text: str, base_score: float = 0.0) -> fl
     return round(min(1.0, max(0.0, combined)), 6)
 
 
+def _apply_authority_and_tag_protection(item: dict[str, Any], s_ce: float) -> dict[str, Any]:
+    """Blend soft authority-tier tie-breaker with exact-tag and legend score-floor protection."""
+    if (tier := item.get("authority_tier")) is not None:
+        s_final = 0.92 * s_ce + 0.08 * ((5.0 - float(tier)) / 4.0)
+    else:
+        s_final = s_ce
+
+    if bool(item.get("exact_tag_match")):
+        s_final = max(s_final, 0.75) + 0.10
+    elif bool(item.get("is_legend_context")):
+        s_final = max(s_final, 0.72)
+    if bool(item.get("exact_subject_match")):
+        s_final += 0.05
+
+    item["score"] = round(s_final, 6)
+    return item
+
+
 def deduplicate_parent_chunks(
     chunks: Sequence[dict[str, Any]],
     top_n: int | None = None,
@@ -73,6 +91,12 @@ def deduplicate_parent_chunks(
 
             if float(chunk.get("score", 0.0)) > float(existing.get("score", 0.0)):
                 existing["score"] = float(chunk["score"])
+            if chunk.get("exact_tag_match"):
+                existing["exact_tag_match"] = True
+            if chunk.get("exact_subject_match"):
+                existing["exact_subject_match"] = True
+            if chunk.get("is_legend_context"):
+                existing["is_legend_context"] = True
         else:
             chunk["parent_content"] = parent_content
             chunk["page_numbers"] = sorted(set(pages))
@@ -176,13 +200,7 @@ class FlashRankReranker:
                 if not meta and isinstance(item.get("id"), int) and 0 <= item["id"] < len(candidates):
                     meta = dict(candidates[item["id"]])
                 s_ce = float(item.get("score", meta.get("score", 0.0)))
-                tier = meta.get("authority_tier")
-                if tier is not None:
-                    s_final = 0.92 * s_ce + 0.08 * ((5.0 - float(tier)) / 4.0)
-                    meta["score"] = round(s_final, 6)
-                else:
-                    meta["score"] = round(s_ce, 6)
-                scored_chunks.append(meta)
+                scored_chunks.append(_apply_authority_and_tag_protection(meta, s_ce))
         else:
             for c in candidates:
                 item = dict(c)
@@ -194,13 +212,7 @@ class FlashRankReranker:
                     text=text,
                     base_score=float(item.get("score", 0.0)),
                 )
-                tier = item.get("authority_tier")
-                if tier is not None:
-                    s_final = 0.92 * s_ce + 0.08 * ((5.0 - float(tier)) / 4.0)
-                    item["score"] = round(s_final, 6)
-                else:
-                    item["score"] = round(s_ce, 6)
-                scored_chunks.append(item)
+                scored_chunks.append(_apply_authority_and_tag_protection(item, s_ce))
 
         scored_chunks.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
         return deduplicate_parent_chunks(scored_chunks, top_n=limit)

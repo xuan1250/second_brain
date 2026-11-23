@@ -9,6 +9,15 @@ node_modules/
 **/node_modules/
 frontend/dist/
 plans/
+docs/
+scripts/
+backend/tests/
+backend/scripts/
+.agents/
+.agentkit/
+.claude/
+*.md
+!backend/README.md
 .git
 .pytest_cache/
 **/.pytest_cache/

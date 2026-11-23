@@ -104,18 +104,19 @@ Operators can select ingestion modes per upload batch in the web UI (`UploadDrop
 
 | Mode | UI Label | Target Engine | VRAM Profile | Typical Speed | Best Used For |
 |---|---|---|---|---|---|
-| **Auto** | `⚡ Auto (Recommended)` | Heuristic preflight: `pymupdf4llm` on digital text; `docling` on scanned/heavy layout | ~1.8 GB if routed to GPU; 0 MB if routed to CPU | 0.4s – 25s/doc | Mixed document batches; default balanced mode. |
-| **GPU Vision** | `🚀 GPU Vision` | `docling` + TableFormer + RapidOCR on CUDA | **~1.8 GB VRAM** (Docling + OCR worker) | 15s – 30s/doc | Complex tables, multi-column layouts, scanned papers, forms, diagrams. |
-| **Fast CPU** | `📄 Fast CPU` | `pymupdf4llm` (CPU only) | **0 MB VRAM** (100% host CPU) | < 1s/doc | Digital text PDFs, novels, simple reports, or when preserving GPU VRAM for active local LLM inference. |
+| **Auto** | `⚡ Auto (Recommended)` | Heuristic preflight: `engineering_cad` on CAD drawings/matrices; `pymupdf4llm` on digital text; `docling` on scanned/heavy layout | 0 MB for `engineering_cad` / `pymupdf4llm`; ~1.8 GB if routed to Docling GPU | 0.2s – 25s/doc | Mixed document batches; default balanced mode. |
+| **GPU Vision** | `🚀 GPU Vision` | `engineering_cad` on CAD drawings/matrices; `docling` + TableFormer + RapidOCR on CUDA otherwise | 0 MB for `engineering_cad`; **~1.8 GB VRAM** for Docling + OCR | 0.5s – 30s/doc | Complex tables, CAD drawings/matrices, scanned papers, diagrams. |
+| **Fast CPU** | `📄 Fast CPU` | `pymupdf4llm` (CPU only, explicit override) | **0 MB VRAM** (100% host CPU) | < 1s/doc | Digital text PDFs, novels, simple reports, or when preserving GPU VRAM for active local LLM inference. |
 
 ### Guidance on Mode Selection
 
-1. **Default to Auto (`⚡ Auto`)**: For standard multi-document uploads, the 5ms PyMuPDF preflight probe checks character density ($> 120$ chars/page) and image count ($\le 2$ images/page) to select the fastest accurate engine without operator intervention.
-2. **Select Fast CPU (`📄 Fast CPU`) During Heavy Local LLM Inference**: If hosting local LLMs (e.g. Ollama 8B models) close to the 8 GB VRAM limit, Fast CPU mode completely eliminates Docling GPU allocations (0 MB VRAM), avoiding CUDA out-of-memory contention.
-3. **Select GPU Vision (`🚀 GPU Vision`) for Critical Layout Fidelity**: For documents with financial balance sheets, complex tabular data, or scanned invoices, GPU Vision forces deep TableFormer and OCR analysis.
-4. **Post-Upload GPU Upgrades**: If a document was parsed with Fast CPU, operators can click **"Upgrade to GPU Vision"** in the Document Inspector header at any time to re-parse with Docling without losing the document ID or annotations.
-5. **Auto Mode Failover Attribution**: If Docling layout parsing encounters an error or CUDA memory pressure in Auto mode, the engine gracefully falls back to PyMuPDF CPU and records the diagnostic cause into `Document.engine_fallback_reason`, visible directly in the UI and database.
-6. **Concurrent Duplicate Uploads & Mode Upgrades**: Re-uploading an existing document requesting an upgrade while the file is already actively in-flight (`queued`, `parsing`, `chunking`, `indexing`) triggers an atomic database Compare-and-Swap (CAS) check, safely coalescing the request into the existing in-flight job without duplicate background tasks.
+1. **Default to Auto (`⚡ Auto`)**: For standard multi-document uploads, the lightweight PyMuPDF preflight probe checks character density ($> 120$ chars/page), image count ($\le 2$ images/page), and CAD geometry signals (`rotated_spans >= 10`, `drawings > 150`, landscape CAD grids, or exploded-SHX `words < 30 & drawings > 300`), routing engineering CAD drawings cleanly to `engineering_cad` without invoking heavy Docling layout parsing.
+2. **Engineering CAD Extraction & CPU RapidOCR Persistence**: `engineering_cad` handles coordinate-grid schedules, rotated Cause & Effect matrices, and CAD logic diagrams deterministically with **0 MB VRAM**, and runs 300-DPI tiled CPU `RapidOCR` for exploded-SHX CAD pages with models persisted under `./data/models/rapidocr` via `RAPIDOCR_MODEL_DIR`.
+3. **Select Fast CPU (`📄 Fast CPU`) During Heavy Local LLM Inference**: If hosting local LLMs (e.g. Ollama 8B models) close to the 8 GB VRAM limit, Fast CPU mode completely eliminates Docling GPU allocations (0 MB VRAM), avoiding CUDA out-of-memory contention.
+4. **Select GPU Vision (`🚀 GPU Vision`) for Critical Layout Fidelity**: For documents with financial balance sheets, complex tabular data, or scanned invoices, GPU Vision forces deep TableFormer and OCR analysis while still preserving `engineering_cad` routing on CAD sheets.
+5. **Post-Upload GPU Upgrades**: If a document was parsed with Fast CPU, operators can click **"Upgrade to GPU Vision"** in the Document Inspector header at any time to re-parse without losing the document ID or annotations (`engineering_cad` documents are already treated as high-fidelity and protected against accidental Fast CPU downgrade).
+6. **Auto Mode Failover Attribution**: If Docling layout parsing encounters an error or CUDA memory pressure in Auto mode, the engine gracefully falls back to PyMuPDF CPU and records the diagnostic cause into `Document.engine_fallback_reason`, visible directly in the UI and database.
+7. **Concurrent Duplicate Uploads & Mode Upgrades**: Re-uploading an existing document requesting an upgrade while the file is already actively in-flight (`queued`, `parsing`, `chunking`, `indexing`) triggers an atomic database Compare-and-Swap (CAS) check, safely coalescing the request into the existing in-flight job without duplicate background tasks.
 
 ### Classification Approval Modes
 Uploads also carry an `approval_mode` parameter controlling the Stage 1b classification gate (when omitted on `POST /api/v1/documents/upload`, it resolves from `WorkspaceSettings.default_approval_mode` configured in **⚙️ Settings**):
@@ -175,6 +176,7 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 | **Workspace Settings** | `curl -fsS http://127.0.0.1:8000/api/v1/settings` | `{"id":"default","default_upload_mode":...,"default_approval_mode":...,"high_confidence_threshold":...}` |
 | **Chat Stream (SSE)** | `curl.exe -fsS -N -X POST "http://127.0.0.1:8000/api/v1/chat/completions" -H "Content-Type: application/json" -d "{\"message\":\"hello\",\"domain\":\"general\"}"` | Stream of Server-Sent Events (`event: token`, `event: agent_thought`, `data: ...`). Note: `POST /api/v1/chat` returns 405 Method Not Allowed; the active route is `/api/v1/chat/completions` |
 | **Legacy Vector Backfill** | `docker compose logs second-brain \| grep -i "backfill"` | Logs indicating `Backfilled legacy points in second_brain_knowledge with general domain` on boot |
+| **Engineering `record_type` Re-Sync** | `docker compose exec second-brain python -m src.ingestion.cli /app/data/raw --force` | Re-parses/re-indexes pre-existing engineering CAD PDFs so `engine="engineering_cad"` and `record_type="document_legend_notes"` payloads populate in Qdrant |
 | **CRAG Architecture Presentation** | Open `docs/presentations/crag_workflow_explained.html` in browser | Interactive visualization of LangGraph nodes, epistemic triad, 3-tier DBs, and system prompts |
 
 > [!TIP]
@@ -196,7 +198,7 @@ When accessing the web UI across a trusted local network or reverse proxy, confi
 The `Dockerfile` stages are commented inline; the design choices that are not obvious from it:
 
 - Base images are pinned by digest for reproducible builds; bump them deliberately.
-- Python deps are installed in two `uv sync --frozen` phases (third-party first, then the project with `--no-editable`) so source edits don't invalidate the dependency layer, and the runtime image only needs `.venv` + `src`.
+- Python deps are installed in two `uv sync --frozen` phases (third-party first, then the project with `--no-editable`) so source edits don't invalidate the dependency layer, and the runtime image only needs `.venv` + `src`. In [`Dockerfile.gpu`](../Dockerfile.gpu), the CUDA 12.4 PyTorch and `onnxruntime-gpu` wheel swap runs before `COPY backend/src` so source edits preserve the ~2.5 GB CUDA layer cache, `.dockerignore` excludes tests/docs/agent directories, and both services rotate JSON logs (`max-size: "10m"`, `max-file: "3"`).
 - The runtime runs as non-root `appuser` (UID/GID `10001`).
 
 ## Storage
@@ -218,6 +220,7 @@ When running Docker Desktop on Windows under the WSL2 backend, host Windows file
 ## First run and model caches
 
 - `BAAI/bge-m3` (~2 GB) and the FastEmbed BM25 model download into `./data/models` on first use, so the first ingestion/query is slow.
+- `RAPIDOCR_MODEL_DIR=/app/data/models/rapidocr` persists exploded-CAD CPU OCR weights under `./data/models/rapidocr` across container rebuilds while pinning `EngineConfig.onnxruntime.use_cuda: False`.
 - The FlashRank reranker model is **not** downloaded unless `FLASHRANK_ALLOW_DOWNLOAD=true` is set (e.g. in `backend/.env`) or the model already exists in `./data/models/flashrank`. Without it, reranking silently falls back to a lexical heuristic — see [development.md](development.md#configuration).
 
 ## Backup and restore

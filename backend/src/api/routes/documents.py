@@ -361,7 +361,10 @@ async def upload_documents(
                 else ("docling" if prefer_fast_path is False else None)
             )
             # Auto-upgrade on duplicate upload or allow awaiting_approval to re-enter
-            is_mode_upgrade = requested_engine == "docling" and existing.parsing_engine != "docling"
+            is_mode_upgrade = (
+                requested_engine == "docling"
+                and existing.parsing_engine not in {"docling", "engineering_cad"}
+            )
             is_awaiting_reenter = existing.status == "awaiting_approval" and approval_mode in ("auto_all", "auto_high_confidence")
             if not is_mode_upgrade and not is_awaiting_reenter:
                 # Idempotent hit: ensure raw file exists on disk, remove temp file, and return existing record

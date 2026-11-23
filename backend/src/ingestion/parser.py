@@ -18,11 +18,13 @@ except (ImportError, OSError):
     DoclingDocument = None  # type: ignore
 
 from src.config import get_settings
+from src.ingestion.engineering_extractor import extract_engineering_pdf, profile_pdf_page
 
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx"}
 EXCEL_WINDOW_ROWS = 50
+_HIGH_FIDELITY_ENGINES = frozenset({"docling", "engineering_cad"})
 
 
 @dataclass
@@ -51,17 +53,43 @@ def compute_sha256(file_path: Path) -> str:
 
 
 def inspect_pdf_fast_path(file_path: Path) -> tuple[bool, str]:
-    """Lightweight 5ms preflight probe using PyMuPDF to classify digital text vs scanned/heavy layout."""
+    """Lightweight preflight probe using PyMuPDF to classify digital text vs CAD/scanned/heavy layout."""
     import pymupdf as fitz
     try:
         doc = fitz.open(str(file_path))
         try:
-            sample_pages = min(3, len(doc))
+            sample_pages = min(5, len(doc))
             total_text_chars = 0
             total_images = 0
 
             for i in range(sample_pages):
                 page = doc[i]
+                mode, metrics = profile_pdf_page(page)
+                if mode != "standard_prose":
+                    return False, f"engineering_cad_layout ({mode} on p.{i + 1})"
+                if metrics["word_count"] < 30 and metrics["drawing_count"] > 300:
+                    return (
+                        False,
+                        f"engineering_cad_layout (exploded_shx words={metrics['word_count']}, drawings={metrics['drawing_count']})",
+                    )
+                if metrics["rotated_span_count"] >= 10:
+                    return (
+                        False,
+                        f"engineering_cad_layout (rotated_spans={metrics['rotated_span_count']})",
+                    )
+                if metrics["drawing_count"] > 150:
+                    return (
+                        False,
+                        f"engineering_cad_layout (high_vector_density drawings={metrics['drawing_count']})",
+                    )
+                if (
+                    metrics["width"] > 1000 or metrics["width"] > metrics["height"] * 1.15
+                ) and metrics["drawing_count"] >= 25:
+                    return (
+                        False,
+                        f"engineering_cad_layout (landscape_cad_grid {int(metrics['width'])}x{int(metrics['height'])}, drawings={metrics['drawing_count']})",
+                    )
+
                 total_text_chars += len(page.get_text().strip())
                 total_images += len(page.get_images())
 
@@ -216,7 +244,7 @@ class DocumentParserService:
                 cached_engine = cached.extra_meta.get("engine")
                 mismatch = (
                     (prefer_fallback is True and cached_engine != "pymupdf4llm")
-                    or (prefer_fallback is False and cached_engine != "docling")
+                    or (prefer_fallback is False and cached_engine not in _HIGH_FIDELITY_ENGINES)
                 )
                 if mismatch:
                     logger.info(
@@ -300,6 +328,26 @@ class DocumentParserService:
         fallback_reason = None
         if prefer_fallback is True:
             return self._parse_pdf_pymupdf4llm(file_path)
+
+        try:
+            eng_result = extract_engineering_pdf(file_path)
+            if eng_result is not None and eng_result.get("has_engineering_records"):
+                return (
+                    eng_result["markdown"],
+                    None,
+                    eng_result["page_count"],
+                    {
+                        "engine": "engineering_cad",
+                        "engineering_profile": eng_result["engineering_profile"],
+                        "has_engineering_records": True,
+                    },
+                )
+        except Exception as exc:
+            logger.warning(
+                "Engineering PDF extractor failed for %s: %s; falling through to standard PDF parser",
+                file_path.name,
+                exc,
+            )
 
         if prefer_fallback is False:
             try:

@@ -694,6 +694,7 @@ class HybridIndexer:
                         "is_current": True,
                         "associated_entities": list(chunk.associated_entities),
                         "contextual_prefix": chunk.contextual_prefix,
+                        "record_type": chunk.record_type,
                     }
                     points.append(
                         models.PointStruct(
