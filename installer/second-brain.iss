@@ -26,7 +26,8 @@ OutputBaseFilename=SecondBrain-Setup-x64
 Compression=lzma2/normal
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\venv\Scripts\pythonw.exe
+SetupIconFile=second-brain.ico
+UninstallDisplayIcon={app}\app\installer\second-brain.ico
 CloseApplications=yes
 RestartApplications=no
 
@@ -43,9 +44,9 @@ Source: "..\build\staging\python\*"; DestDir: "{app}\python"; Flags: ignoreversi
 Source: "..\build\staging\venv\*"; DestDir: "{app}\venv"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Second Brain"; Filename: "{app}\venv\Scripts\pythonw.exe"; Parameters: """{app}\{#MyEntryRelPath}"""; WorkingDir: "{app}\app\backend"; Comment: "Launch Second Brain Knowledge Repository"
+Name: "{group}\Second Brain"; Filename: "{app}\venv\Scripts\pythonw.exe"; Parameters: """{app}\{#MyEntryRelPath}"""; WorkingDir: "{app}\app\backend"; IconFilename: "{app}\app\installer\second-brain.ico"; Comment: "Launch Second Brain Knowledge Repository"
 Name: "{group}\Uninstall Second Brain"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\Second Brain"; Filename: "{app}\venv\Scripts\pythonw.exe"; Parameters: """{app}\{#MyEntryRelPath}"""; WorkingDir: "{app}\app\backend"; Comment: "Launch Second Brain Knowledge Repository"; Tasks: desktopicon
+Name: "{userdesktop}\Second Brain"; Filename: "{app}\venv\Scripts\pythonw.exe"; Parameters: """{app}\{#MyEntryRelPath}"""; WorkingDir: "{app}\app\backend"; IconFilename: "{app}\app\installer\second-brain.ico"; Comment: "Launch Second Brain Knowledge Repository"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\venv\Scripts\pythonw.exe"; Parameters: """{app}\{#MyEntryRelPath}"""; WorkingDir: "{app}\app\backend"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent

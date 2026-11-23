@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_tray_icon_image(size: int = 64) -> Any | None:
-    """Render a crisp RGBA Second Brain emblem using Pillow, or return None if unavailable."""
+    """Load the brand `.ico` emblem if present, or render the Pillow fallback icon."""
     try:
         from PIL import Image, ImageDraw
     except ImportError:
@@ -23,6 +23,18 @@ def build_tray_icon_image(size: int = 64) -> Any | None:
         return None
 
     target_size = max(16, int(size))
+    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
+    ico_path = Path(__file__).resolve().parents[3] / "installer" / "second-brain.ico"
+    if ico_path.is_file():
+        try:
+            with Image.open(ico_path) as ico_img:
+                rgba = ico_img.convert("RGBA")
+                if rgba.size == (target_size, target_size):
+                    return rgba
+                return rgba.resize((target_size, target_size), resample=resampling)
+        except Exception as exc:
+            logger.debug("Failed to load tray .ico '%s', using fallback: %s", ico_path, exc)
+
     scale = 2
     canvas_size = target_size * scale
 

@@ -458,6 +458,8 @@ foreach ($cfgFile in @("pyproject.toml", "uv.lock", "config.yaml")) {
 Copy-Item -Path "$frontendDistDir\*" -Destination $stagedAppFrontendDist -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $installerDir "launcher_entry.py") -Destination (Join-Path $stagedAppInstaller "launcher_entry.py") -Force
 Copy-Item -LiteralPath (Join-Path $installerDir "THIRD_PARTY_NOTICES.txt") -Destination (Join-Path $stagedAppInstaller "THIRD_PARTY_NOTICES.txt") -Force
+Copy-Item -LiteralPath (Join-Path $installerDir "second-brain.ico") -Destination (Join-Path $stagedAppInstaller "second-brain.ico") -Force
+Copy-Item -LiteralPath (Join-Path $installerDir "second-brain.svg") -Destination (Join-Path $stagedAppInstaller "second-brain.svg") -Force
 
 Assert-ZeroModelWeights -StagingRoot $stagingDir -VenvRoot $stagingVenv -AppRoot $stagingApp
 Write-Host "  Zero staged AI model weights check passed."
@@ -478,6 +480,7 @@ assert paths.is_staged_install, f'Expected staged install, got app_dir={paths.ap
 assert paths.qdrant_exe.is_file(), f'Missing qdrant.exe at {paths.qdrant_exe}'
 assert paths.uv_exe.is_file(), f'Missing uv.exe at {paths.uv_exe}'
 assert paths.frontend_dist_dir.is_dir(), f'Missing frontend/dist at {paths.frontend_dist_dir}'
+assert (paths.app_dir / 'app' / 'installer' / 'second-brain.ico').is_file(), 'Missing staged second-brain.ico'
 assert fastapi_app is not None
 print('LAUNCHER_ENTRY_OK')
 "@
