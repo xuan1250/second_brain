@@ -1,27 +1,44 @@
 """System health check, Qdrant/SQLite statistics, memory telemetry, and read-only provider configuration routes."""
 from __future__ import annotations
 
+import asyncio
+import ctypes
+import json
 import logging
 import os
+import sys
+from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies import get_app_settings, get_db_session, get_orchestrator, get_qdrant
 from src.api.schemas import (
+    BootstrapStatusResponse,
+    ComputeProfileRequest,
+    ComputeProfileResponse,
+    GpuAdapterSchema,
+    HardwareReportResponse,
     IngestionPauseResumeResponse,
     MemoryReclaimResponse,
     MemoryStatsResponse,
+    ModelStatusSchema,
     ProviderOption,
+    ReindexCorpusResponse,
     SystemHealthResponse,
     SystemStatsResponse,
 )
 from src.config import Settings
-from src.db.models import ChatThread, Document, DocumentChunk
+from src.db.models import ChatThread, Document, DocumentChunk, IngestionJob
+from src.desktop.bootstrap import RuntimeBootstrapService, detect_collection_sparse_mode
+from src.desktop.config import DesktopConfig, DesktopPaths, load_desktop_config, save_desktop_config
+from src.desktop.hardware import probe_system_hardware
 from src.ingestion.indexer import release_cuda_cache, resolve_compute_device, resolve_sparse_mode
 from src.ingestion.classifier import is_classifier_resident, get_classifier_model_name
+from src.ingestion.parser import load_parsed_checkpoint
 from src.ingestion.worker import IngestionOrchestrator
 from src.rag.llm import (
     _load_dotenv_if_present,
@@ -37,7 +54,7 @@ router = APIRouter(prefix="/system", tags=["system"])
 
 
 def _get_process_rss_mb() -> float:
-    """Return current process RSS in MiB with Linux /proc and Unix getrusage fallback."""
+    """Return current process RSS in MiB with Linux /proc, Win32 psapi, and Unix getrusage fallback."""
     # 1. Linux /proc/self/status (accurate current RSS inside Docker / Linux)
     try:
         if os.path.exists("/proc/self/status"):
@@ -51,10 +68,52 @@ def _get_process_rss_mb() -> float:
     except Exception:
         pass
 
-    # 2. resource.getrusage fallback (Unix max RSS)
+    # 2. Windows Win32 GetProcessMemoryInfo (WorkingSetSize)
+    if sys.platform == "win32":
+        try:
+            class _ProcessMemoryCounters(ctypes.Structure):
+                _fields_ = [
+                    ("cb", ctypes.c_ulong),
+                    ("PageFaultCount", ctypes.c_ulong),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetCurrentProcess.argtypes = []
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+
+            get_mem_info = None
+            try:
+                psapi = ctypes.WinDLL("psapi", use_last_error=True)
+                get_mem_info = psapi.GetProcessMemoryInfo
+            except Exception:
+                get_mem_info = kernel32.K32GetProcessMemoryInfo
+
+            get_mem_info.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(_ProcessMemoryCounters),
+                ctypes.c_ulong,
+            ]
+            get_mem_info.restype = ctypes.c_int
+
+            counters = _ProcessMemoryCounters()
+            counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
+            proc_handle = kernel32.GetCurrentProcess()
+            if get_mem_info(proc_handle, ctypes.byref(counters), counters.cb):
+                return round(counters.WorkingSetSize / (1024.0 * 1024.0), 2)
+        except Exception:
+            pass
+
+    # 3. resource.getrusage fallback (Unix max RSS)
     try:
         import resource
-        import sys
 
         rusage = resource.getrusage(resource.RUSAGE_SELF)
         # On macOS ru_maxrss is in bytes, on Linux in KiB
@@ -381,3 +440,287 @@ async def resume_ingestion(
     """Resume ingestion dispatch for held queued jobs."""
     orchestrator.resume()
     return IngestionPauseResumeResponse(status="ok", ingestion_paused=False)
+
+
+def _resolve_desktop_context(settings: Settings) -> tuple[DesktopPaths, DesktopConfig]:
+    """Resolve DesktopPaths and DesktopConfig, isolating pytest runs from host `%LOCALAPPDATA%`."""
+    desktop_home = (os.environ.get("SECOND_BRAIN_DESKTOP_HOME") or "").strip()
+    if desktop_home:
+        paths = DesktopPaths()
+        return paths, load_desktop_config(paths)
+
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        paths = DesktopPaths(
+            user_data_dir=settings.data_dir.parent,
+            data_dir_override=settings.data_dir,
+        )
+        return paths, load_desktop_config(paths)
+
+    paths = DesktopPaths()
+    config = load_desktop_config(paths)
+    if (os.environ.get("DATA_DIR") or "").strip() and not (config.data_dir_override or "").strip():
+        paths = DesktopPaths(data_dir_override=settings.data_dir)
+    return paths, config
+
+
+@router.get("/hardware", response_model=HardwareReportResponse)
+async def system_hardware(
+    qdrant: AsyncQdrantClient = Depends(get_qdrant),
+    settings: Settings = Depends(get_app_settings),
+) -> HardwareReportResponse:
+    """Inspect host CPU, RAM, GPUs, disk capacity, and active compute/sparse-mode configuration."""
+    paths, config = _resolve_desktop_context(settings)
+    report = probe_system_hardware(data_dir=paths.resolve_data_dir(config))
+    collection_sparse_mode = await detect_collection_sparse_mode(qdrant, settings.qdrant_collection)
+    sparse_mode_pinned = config.sparse_mode_override in ("bm25", "bge_m3")
+
+    payload = report.model_dump()
+    payload["gpus"] = [GpuAdapterSchema(**g) for g in payload.get("gpus", [])]
+    return HardwareReportResponse(
+        **payload,
+        active_compute_profile=config.compute_profile,
+        cuda_runtime_ready=config.cuda_runtime_ready,
+        active_sparse_mode_override=config.sparse_mode_override,
+        collection_sparse_mode=collection_sparse_mode,
+        sparse_mode_pinned=sparse_mode_pinned,
+    )
+
+
+@router.get("/bootstrap-status", response_model=BootstrapStatusResponse)
+async def system_bootstrap_status(
+    request: Request,
+    settings: Settings = Depends(get_app_settings),
+) -> BootstrapStatusResponse:
+    """Return offline readiness across all 6 model groups, disk usage, and any active download progress."""
+    paths, config = _resolve_desktop_context(settings)
+    bootstrap = RuntimeBootstrapService(paths=paths, config=config)
+    status = bootstrap.inspect_models_status()
+
+    raw_progress = getattr(request.app.state, "bootstrap_progress", None)
+    progress_dict: dict[str, Any] | None = None
+    if raw_progress is not None:
+        if hasattr(raw_progress, "model_dump"):
+            progress_dict = raw_progress.model_dump()
+        elif isinstance(raw_progress, dict):
+            progress_dict = dict(raw_progress)
+
+    return BootstrapStatusResponse(
+        models_ready=bool(status["models_ready"]),
+        cuda_runtime_ready=config.cuda_runtime_ready,
+        compute_profile=config.compute_profile,
+        total_size_mb=float(status["total_size_mb"]),
+        models_dir=str(status["models_dir"]),
+        models=[
+            ModelStatusSchema(**(m.model_dump() if hasattr(m, "model_dump") else m))
+            for m in status["models"]
+        ],
+        progress=progress_dict,
+    )
+
+
+async def _run_corpus_reindex_job(
+    orchestrator: IngestionOrchestrator,
+    *,
+    doc_id: str,
+    job_id: str,
+    raw_path: Any | None,
+    has_checkpoint: bool,
+) -> None:
+    """Execute background re-chunking/re-indexing for a single document."""
+    try:
+        if has_checkpoint:
+            await orchestrator.complete_approved_ingestion(doc_id=doc_id, job_id=job_id)
+        elif raw_path is not None:
+            await orchestrator.process_document(
+                doc_id=doc_id,
+                job_id=job_id,
+                raw_path=raw_path,
+                force_reparse=False,
+                approval_mode="auto_all",
+            )
+    except Exception:
+        pass
+
+
+async def _queue_corpus_reindex(
+    request: Request,
+    session: AsyncSession,
+    orchestrator: IngestionOrchestrator,
+    settings: Settings,
+) -> tuple[int, int]:
+    """Queue all ready documents for background sparse/vector re-indexing."""
+    ready_docs = (
+        await session.execute(select(Document).where(Document.status == "ready"))
+    ).scalars().all()
+
+    queued_count = 0
+    skipped_count = 0
+    bg_tasks: set[asyncio.Task[Any]] | None = getattr(request.app.state, "background_tasks", None)
+    if bg_tasks is None:
+        bg_tasks = set()
+        request.app.state.background_tasks = bg_tasks
+
+    for doc in ready_docs:
+        ext = (doc.file_type or "").lower().lstrip(".")
+        sha = (doc.sha256 or "").lower()
+        cached = load_parsed_checkpoint(
+            data_dir=settings.data_dir,
+            sha=doc.sha256,
+            filename=doc.filename,
+            file_type=ext,
+        )
+        raw_dest = settings.data_dir / "raw" / f"{sha}.{ext}" if sha and ext else None
+        has_raw = raw_dest is not None and raw_dest.is_file()
+        if cached is None and not has_raw:
+            skipped_count += 1
+            continue
+
+        now = datetime.now(timezone.utc)
+        doc.status = "queued"
+        doc.error = None
+        doc.updated_at = now
+        session.add(doc)
+
+        new_job = IngestionJob(
+            doc_id=doc.id,
+            status="queued",
+            stage="queued",
+            progress=0.45 if cached is not None else 0.0,
+            stage_timings=json.dumps({}),
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(new_job)
+        await session.commit()
+        await session.refresh(new_job)
+
+        task = asyncio.create_task(
+            _run_corpus_reindex_job(
+                orchestrator,
+                doc_id=doc.id,
+                job_id=new_job.id,
+                raw_path=raw_dest if has_raw else None,
+                has_checkpoint=cached is not None,
+            )
+        )
+        bg_tasks.add(task)
+        task.add_done_callback(bg_tasks.discard)
+        queued_count += 1
+
+    return queued_count, skipped_count
+
+
+@router.post("/reindex", response_model=ReindexCorpusResponse)
+async def reindex_corpus(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    orchestrator: IngestionOrchestrator = Depends(get_orchestrator),
+    settings: Settings = Depends(get_app_settings),
+) -> ReindexCorpusResponse:
+    """Queue all ready documents for background re-indexing under the active sparse/dense profile."""
+    queued_count, skipped_count = await _queue_corpus_reindex(request, session, orchestrator, settings)
+    msg = (
+        f"Queued {queued_count} document(s) for background re-indexing."
+        if queued_count > 0
+        else "No ready documents required re-indexing."
+    )
+    if skipped_count > 0:
+        msg += f" Skipped {skipped_count} document(s) without cached checkpoint or raw source file."
+    return ReindexCorpusResponse(
+        status="ok",
+        queued_count=queued_count,
+        skipped_count=skipped_count,
+        message=msg,
+    )
+
+
+@router.post("/compute-profile", response_model=ComputeProfileResponse)
+async def update_compute_profile(
+    payload: ComputeProfileRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    qdrant: AsyncQdrantClient = Depends(get_qdrant),
+    orchestrator: IngestionOrchestrator = Depends(get_orchestrator),
+    settings: Settings = Depends(get_app_settings),
+) -> ComputeProfileResponse:
+    """Validate and persist CPU/CUDA compute profile selection with sparse-mode corpus protection."""
+    paths, config = _resolve_desktop_context(settings)
+    previous_profile = config.compute_profile
+    previous_sparse_override = config.sparse_mode_override
+    target_profile = payload.profile
+
+    if target_profile == "cuda":
+        report = probe_system_hardware(data_dir=paths.resolve_data_dir(config))
+        if not report.has_nvidia_cuda_capable_gpu and not payload.force:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cannot switch to CUDA profile without an NVIDIA GPU (>= 4.0 GB VRAM). "
+                    f"{report.recommendation_reason} Pass force=true to override."
+                ),
+            )
+        if not report.cuda_disk_sufficient and not payload.force:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"CUDA 12.4 wheels require at least 12.0 GB free disk space "
+                    f"(found {report.free_disk_gb:.1f} GB). Pass force=true to override."
+                ),
+            )
+
+    collection_sparse_mode = await detect_collection_sparse_mode(qdrant, settings.qdrant_collection)
+    reindex_recommended = RuntimeBootstrapService._apply_sparse_mode_policy(
+        config,
+        target_profile=target_profile,
+        existing_sparse_mode=collection_sparse_mode,
+        reindex_sparse=payload.reindex_sparse,
+    )
+
+    config.compute_profile = target_profile
+    save_desktop_config(config, paths)
+
+    wheel_install_required = target_profile == "cuda" and not config.cuda_runtime_ready
+    restart_required = (
+        target_profile != previous_profile
+        or wheel_install_required
+        or config.sparse_mode_override != previous_sparse_override
+    )
+
+    reindex_queued = 0
+    if payload.reindex_sparse and not restart_required:
+        reindex_queued, _ = await _queue_corpus_reindex(request, session, orchestrator, settings)
+
+    if wheel_install_required:
+        message = (
+            "Compute profile set to 'cuda'. CUDA 12.4 runtime wheels must be installed "
+            "and the backend sidecar restarted."
+        )
+    elif restart_required:
+        message = (
+            f"Compute profile updated from '{previous_profile}' to '{target_profile}'. "
+            "Restart the backend sidecar to apply."
+        )
+        if payload.reindex_sparse:
+            message += " Invoke POST /api/v1/system/reindex after restart to re-index existing documents."
+    else:
+        message = f"Compute profile remains '{target_profile}'."
+        if reindex_queued > 0:
+            message += f" Queued {reindex_queued} document(s) for background sparse re-indexing."
+
+    if reindex_recommended:
+        message += " Existing Qdrant points are pinned to 'bm25'; opt into re-indexing to enable learned BGE-M3 sparse vectors."
+
+    return ComputeProfileResponse(
+        status="ok",
+        compute_profile=target_profile,
+        previous_profile=previous_profile,
+        restart_required=restart_required,
+        wheel_install_required=wheel_install_required,
+        cuda_runtime_ready=config.cuda_runtime_ready,
+        sparse_mode_override=config.sparse_mode_override,
+        collection_sparse_mode=collection_sparse_mode,
+        reindex_recommended=reindex_recommended,
+        reindex_queued=reindex_queued,
+        message=message,
+    )
+

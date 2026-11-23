@@ -200,6 +200,7 @@ Key architectural decisions and trade-offs adopted for the system:
 | Qdrant `on_disk=True` for dense vectors and HNSW index | Reduces Qdrant RAM consumption by memory-mapping vector data and graph indexes directly from disk | Pinning all vector embeddings and HNSW graphs in RAM |
 | HuggingFace cache unification under `models/huggingface/hub` | Normalizes all embedder and sparse weight downloads to `models/huggingface/hub` (matching `HF_HOME`), preventing duplicate 4+ GB blob downloads at the cache root | Allowing `SentenceTransformer(cache_folder=...)` to download duplicate model copies outside `hub/` |
 | UI-Configured LLM Credentials in SQLite `WorkspaceSettings` with Read-Only `.env` Fallback & Two-Tier Validation | Preserves read-only container filesystem security (`backend/.env:ro`) while allowing operators to configure, mask, verify, or clear keys live with 0ms polling overhead and proactive warnings across 3 UI surfaces | Mutating `backend/.env` from inside Docker; unverified key saves causing silent runtime chat failures; storing plaintext credentials in client browser storage |
+| Windows Desktop packaging (`pywebview` + `pystray` + native `qdrant.exe` + Option 1 6-group model bootstrap + `%LOCALAPPDATA%\SecondBrain\runtime\venv` CUDA isolation + hardware-aware Inno Setup 6) | Delivers a zero-Docker per-user Windows `.exe` (`SecondBrain-Setup-x64.exe`) with hardware-probed CPU/CUDA selection, single-instance mutex + Win32 Job Object child termination, resumable first-run model download across all 6 model groups, and upgrade-safe CUDA wheel isolation outside `{app}` | Monolithic 5–7 GB model-bundled installer; PyInstaller frozen binaries breaking `ProcessPoolExecutor` spawn workers; Electron RAM overhead; installing CUDA wheels inside `{app}\venv` where app updates wipe them |
 
 ## Non-goals
 
@@ -207,4 +208,4 @@ Not multi-user or collaborative, not a document editor (ingestion is read-only),
 
 ## Known constraints
 
-- `pymupdf4llm` is AGPL-licensed — acceptable for personal self-hosting; revisit before redistribution.
+- `pymupdf` and `pymupdf4llm` are AGPL-3.0 licensed — acceptable for personal self-hosting and AGPL-compliant open distribution (see [`installer/THIRD_PARTY_NOTICES.txt`](../installer/THIRD_PARTY_NOTICES.txt)); if pursuing closed-source commercial redistribution, migrate the fast PDF path to `pypdfium2` or acquire an Artifex commercial license.

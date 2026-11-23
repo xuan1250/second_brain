@@ -1,0 +1,153 @@
+================================================================================
+SECOND BRAIN DESKTOP — LICENSE & THIRD-PARTY SOFTWARE NOTICES
+================================================================================
+
+Second Brain
+Copyright (c) 2026 dominh_xuan
+
+Second Brain itself is licensed under the MIT License:
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+--------------------------------------------------------------------------------
+IMPORTANT NOTICE — GNU AFFERO GENERAL PUBLIC LICENSE v3.0 (AGPL-3.0)
+--------------------------------------------------------------------------------
+
+This distribution includes and invokes:
+  - PyMuPDF (`pymupdf`) — Copyright (c) Artifex Software, Inc.
+  - PyMuPDF4LLM (`pymupdf4llm`) — Copyright (c) Artifex Software, Inc.
+
+Both `pymupdf` and `pymupdf4llm` are licensed under the GNU Affero General
+Public License Version 3.0 (AGPL-3.0), unless separately licensed under an
+Artifex commercial license.
+
+Under AGPL-3.0:
+  1. Redistributing an installer or application package containing `pymupdf` /
+     `pymupdf4llm` carries copyleft obligations requiring the complete
+     corresponding source code of the combined work to be made available under
+     AGPL-3.0 terms, including preserving copyright and license notices and
+     offering source code to remote network users if exposed over a network.
+  2. Commercial / Closed-Source Migration Path (see `docs/system-architecture.md`
+     and packaging design notes): If pursuing proprietary or closed-source
+     commercial redistribution without AGPL-3.0 obligations, replace the
+     PyMuPDF / pymupdf4llm fast-path extractor with `pypdfium2` (Apache-2.0 /
+     BSD-3-Clause) or obtain a commercial license directly from Artifex
+     Software, Inc.
+
+Full AGPL-3.0 license text: https://www.gnu.org/licenses/agpl-3.0.txt
+
+--------------------------------------------------------------------------------
+BUNDLED STANDALONE BINARIES & PYTHON RUNTIME
+--------------------------------------------------------------------------------
+
+1. Qdrant (`qdrant.exe`, `qdrant-client`)
+   License: Apache License 2.0
+   Source:  https://github.com/qdrant/qdrant
+
+2. Astral `uv` (`uv.exe`)
+   License: Dual-licensed under MIT License OR Apache License 2.0
+   Source:  https://github.com/astral-sh/uv
+
+3. CPython 3.13 (`python-build-standalone`)
+   License: Python Software Foundation License Version 2 (PSF-2.0)
+   Source:  https://www.python.org / https://github.com/astral-sh/python-build-standalone
+
+--------------------------------------------------------------------------------
+PYTHON BACKEND & DESKTOP SHELL PACKAGES
+--------------------------------------------------------------------------------
+
+- `pymupdf`, `pymupdf4llm`
+  License: AGPL-3.0 (see prominent AGPL-3.0 notice above)
+
+- `pystray`
+  License: GNU Lesser General Public License v3.0 (LGPL-3.0)
+
+- `pywebview`
+  License: BSD-3-Clause
+
+- `torch`, `torchvision`
+  License: BSD-3-Clause
+  Note: CPU-only wheels are bundled in `{app}\venv`. If you select NVIDIA GPU
+  Accelerated Mode (CUDA 12.4), `uv.exe` downloads CUDA 12.4 PyTorch and
+  `onnxruntime-gpu` wheels from PyTorch / PyPI into `%LOCALAPPDATA%\SecondBrain\runtime\venv`.
+
+- `Pillow`
+  License: HPND / MIT-CMU (Historical Permission Notice and Disclaimer)
+
+- `Docling` (`docling`)
+  License: MIT License
+
+- `ONNX Runtime` (`onnxruntime`, `onnxruntime-gpu`)
+  License: MIT License
+
+- `FastAPI`, `Starlette`, `Pydantic`, `pydantic-settings`, `LangChain`,
+  `LangGraph`, `SQLAlchemy`, `aiosqlite`
+  License: MIT License
+
+- `RapidOCR` (`rapidocr`), `FastEmbed`, `FlashRank`
+  License: Apache License 2.0 / MIT (per upstream package metadata)
+
+--------------------------------------------------------------------------------
+FRONTEND APPLICATION PACKAGES (BUNDLED IN `frontend/dist`)
+--------------------------------------------------------------------------------
+
+- `React` (`react`, `react-dom`), `Vite`, `Tailwind CSS`, `TanStack Query`
+  (`@tanstack/react-query`)
+  License: MIT License
+
+- `pdfjs-dist`
+  License: Apache License 2.0
+
+--------------------------------------------------------------------------------
+FIRST-RUN DOWNLOADED AI MODEL GROUPS (NOT BUNDLED IN INSTALLER)
+--------------------------------------------------------------------------------
+
+By default ("Option 1 — Slim Installer + First-Run Model Downloader"), AI model
+weights are NOT bundled inside SecondBrain-Setup-x64.exe. Instead, on first
+launch (or via local folder import), the desktop setup assistant downloads the
+following 6 model groups from their upstream repositories into
+`%LOCALAPPDATA%\SecondBrain\data\models`:
+
+1. `BAAI/bge-m3` — Dense & learned sparse multilingual embeddings
+   License: MIT License
+   Origin:  https://huggingface.co/BAAI/bge-m3
+
+2. `convaiinnovations/laya-multilingual` — Domain & modality classifier
+   Origin:  https://huggingface.co/convaiinnovations/laya-multilingual
+   Note:    Subject to the upstream model repository license and terms.
+
+3. `Qdrant/bm25` — FastEmbed BM25 sparse lexical model & IDF tables
+   License: Apache License 2.0 (via FastEmbed / Qdrant)
+   Origin:  https://huggingface.co/Qdrant/bm25
+
+4. `ms-marco-MultiBERT-L-12` — FlashRank multilingual cross-encoder reranker
+   Origin:  Downloaded via FlashRank from upstream model storage; subject to
+            upstream model card / HuggingFace terms.
+
+5. RapidOCR v3 ONNX Engine — CPU ONNX detection/classification/recognition models
+   License: Apache License 2.0
+   Origin:  https://github.com/RapidAI/RapidOCR
+
+6. Docling v2 Layout & TableFormer (`docling-project/docling-models`)
+   License: MIT License
+   Origin:  https://huggingface.co/docling-project/docling-models
+
+================================================================================
+End of Third-Party Notices.
+================================================================================
