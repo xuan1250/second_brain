@@ -1,6 +1,8 @@
 """Async SQLite engine + session factory (WAL, FK enforcement) and taxonomy migrations/seeds."""
 from __future__ import annotations
 
+import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -13,6 +15,20 @@ from sqlmodel import SQLModel
 from src.config import get_settings
 from src.db import models  # noqa: F401  (register tables)
 from src.db.models import DomainLexicon, DomainRegistry, SubdomainRegistry, WorkspaceSettings
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_settings_json_dict(raw: str | None) -> dict[str, Any]:
+    """Parse a persisted WorkspaceSettings JSON object, returning {} on malformed input."""
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception as exc:
+        logger.warning("Failed to parse persisted WorkspaceSettings JSON: %s", exc)
+        return {}
 
 DEFAULT_DOMAINS: list[dict[str, Any]] = [
     {
@@ -763,31 +779,45 @@ async def init_db(engine: AsyncEngine) -> None:
                 runtime_settings.ingestion.high_confidence_threshold = ws.high_confidence_threshold
             if ws.default_llm_provider:
                 runtime_settings.llm.provider = ws.default_llm_provider
+                if not ws.default_llm_model:
+                    prov_cfg = runtime_settings.llm.providers.get(ws.default_llm_provider.strip().lower())
+                    if prov_cfg and prov_cfg.model_name:
+                        runtime_settings.llm.model_name = prov_cfg.model_name
             if ws.default_llm_model:
                 runtime_settings.llm.model_name = ws.default_llm_model
 
             # Sync persisted credentials & validations to runtime LLM module state
-            from src.rag.llm import sync_runtime_credentials
+            from src.rag.llm import resolve_provider_credential, sync_runtime_credentials
 
-            api_keys: dict[str, str] = {}
-            if ws.llm_api_keys:
-                try:
-                    parsed_keys = json.loads(ws.llm_api_keys)
-                    if isinstance(parsed_keys, dict):
-                        api_keys = {str(k): str(v) for k, v in parsed_keys.items() if v is not None}
-                except Exception:
-                    pass
-
-            validations: dict[str, dict[str, Any]] = {}
-            if ws.llm_key_validations:
-                try:
-                    parsed_vals = json.loads(ws.llm_key_validations)
-                    if isinstance(parsed_vals, dict):
-                        validations = {str(k): v for k, v in parsed_vals.items() if isinstance(v, dict)}
-                except Exception:
-                    pass
+            api_keys = {
+                str(k): str(v)
+                for k, v in _parse_settings_json_dict(ws.llm_api_keys).items()
+                if v is not None
+            }
+            validations = {
+                str(k): v
+                for k, v in _parse_settings_json_dict(ws.llm_key_validations).items()
+                if isinstance(v, dict)
+            }
 
             sync_runtime_credentials(api_keys, validations, ws.llm_compat_base_url)
+
+            # When no workspace default provider is pinned, avoid defaulting to an unconfigured provider
+            # if another provider already has valid credentials in SQLite UI keys or .env.
+            if not ws.default_llm_provider:
+                def _provider_has_credential(prov: str) -> bool:
+                    key, _, base_url = resolve_provider_credential(prov, runtime_settings)
+                    return bool(key and base_url) if prov == "openai_compatible" else bool(key)
+
+                active_provider = (runtime_settings.llm.provider or "openai").strip().lower()
+                if not _provider_has_credential(active_provider):
+                    for cand in ("openai", "deepseek", "anthropic", "openai_compatible"):
+                        if _provider_has_credential(cand):
+                            runtime_settings.llm.provider = cand
+                            cand_entry = runtime_settings.llm.providers.get(cand)
+                            if cand_entry and cand_entry.model_name:
+                                runtime_settings.llm.model_name = cand_entry.model_name
+                            break
 
 
 _engine: AsyncEngine | None = None

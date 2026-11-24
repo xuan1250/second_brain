@@ -485,6 +485,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       });
 
       if (res.valid) {
+        const availableProviders = wsSettings?.available_providers ?? [];
+        const currentDefaultProv =
+          llmProvider || wsSettings?.default_llm_provider || "openai";
+        const matchingActiveOption = availableProviders.find(
+          (p) => p.provider === currentDefaultProv
+        );
+        const shouldPersistDefault =
+          llmProvider === provId ||
+          !wsSettings?.default_llm_provider ||
+          !matchingActiveOption?.configured;
+
+        if (shouldPersistDefault) {
+          const matchingOpt = availableProviders.find(
+            (p) => p.provider === provId
+          );
+          const effectiveModel =
+            llmProvider === provId && llmModel.trim()
+              ? llmModel.trim()
+              : res.tested_model ||
+                matchingOpt?.default_model ||
+                res.provider_option?.default_model ||
+                "";
+
+          await updateSettingsMutation.mutateAsync({
+            default_llm_provider: provId,
+            default_llm_model: effectiveModel || null,
+            ...(provId === "openai_compatible"
+              ? { llm_compat_base_url: compatBaseUrl.trim() || null }
+              : {}),
+          });
+          setLlmProvider(provId);
+          setLlmModel(effectiveModel);
+          setSelectedProvider(provId);
+          setSelectedModel(effectiveModel);
+        }
+
         setVerifyFeedback((prev) => ({
           ...prev,
           [provId]: {

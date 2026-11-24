@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -79,7 +80,6 @@ def build_tray_icon_image(size: int = 64) -> Any | None:
             width=max(1, scale),
         )
 
-    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
     return image.resize((target_size, target_size), resample=resampling)
 
 
@@ -262,6 +262,13 @@ class SystemTrayController:
             return
         try:
             icon.stop()
+            tray_thread = getattr(icon, "_thread", None)
+            if (
+                isinstance(tray_thread, threading.Thread)
+                and tray_thread.is_alive()
+                and tray_thread is not threading.current_thread()
+            ):
+                tray_thread.join(timeout=2.0)
         except Exception as exc:
             logger.debug("Error stopping system tray icon: %s", exc)
 

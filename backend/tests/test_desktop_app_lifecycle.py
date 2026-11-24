@@ -316,6 +316,33 @@ def test_setup_ui_html_is_offline_self_contained_and_complete():
         assert required_token in html_text
 
 
+def test_setup_ui_html_brand_icon_and_blocker_gating():
+    html_text = _SETUP_HTML_PATH.read_text(encoding="utf-8")
+
+    # Inline Synapse Hemisphere brand icon omits xmlns http:// URL and uses unique gradient IDs
+    assert "http://" not in html_text.lower()
+    assert "https://" not in html_text.lower()
+    assert 'viewBox="0 0 256 256"' in html_text
+    assert 'id="sb-bg-a"' in html_text
+    assert 'fill="url(#sb-bg-a)"' in html_text
+
+    # Action buttons start disabled until desktop bridge configuration loads
+    assert re.search(r'<button[^>]*id="btn-pick-folder"[^>]*\bdisabled\b', html_text)
+    start_btn_match = re.search(
+        r'<button[^>]*id="btn-start-setup"[^>]*\bdisabled\b[^>]*>(.*?)</button>',
+        html_text,
+        flags=re.DOTALL,
+    )
+    assert start_btn_match is not None
+    assert "Checking Configuration..." in start_btn_match.group(1)
+
+    # JS gates readiness, hardware blockers, and incompatible CUDA selections
+    assert "if (!state.initial)" in html_text
+    assert "Resolve Hardware Blockers First" in html_text
+    assert "CUDA Requirements Not Met" in html_text
+    assert "updatePrimaryButtonLabel(false);" in html_text
+
+
 # ==============================================================================
 # R3.3 — SystemTrayController & Icon Asset
 # ==============================================================================
@@ -513,12 +540,87 @@ def test_window_close_hides_and_shows_one_time_tray_hint_while_quit_shuts_down(t
     win.destroy.assert_called_once()
     mutex.release.assert_called_once()
 
-    # Check start() parameters isolated WebView2 cache cleanly
+    # Check start() parameters isolated WebView2 cache cleanly and supplied app icon when present
     start_kw = fake_webview.start_calls[0]
     assert start_kw["storage_path"] == str(paths.webview2_cache_dir)
     assert start_kw["private_mode"] is False
     if sys.platform == "win32":
         assert start_kw["gui"] == "edgechromium"
+    if app.resolve_app_icon_path() is not None:
+        icon_val = start_kw.get("icon")
+        assert isinstance(icon_val, str) and icon_val.endswith("second-brain.ico")
+
+
+def test_desktop_app_icon_resolution_webview_kwarg_and_win32_apply(tmp_path: Path):
+    paths = _make_paths(tmp_path)
+    _populate_models(paths.models_dir)
+    cfg = DesktopConfig(models_ready=True)
+    save_desktop_config(cfg, paths)
+
+    root_ico = paths.app_dir / "installer" / "second-brain.ico"
+    root_ico.parent.mkdir(parents=True, exist_ok=True)
+    root_ico.write_bytes(b"root-ico")
+
+    staged_ico = paths.app_dir / "app" / "installer" / "second-brain.ico"
+    staged_ico.parent.mkdir(parents=True, exist_ok=True)
+    staged_ico.write_bytes(b"staged-ico")
+
+    sup = _make_mock_supervisor()
+    fake_pystray = _make_fake_pystray()
+    tray = SystemTrayController(paths=paths, config=cfg, pystray_module=fake_pystray)
+
+    def on_start(windows: list[_FakeWindow], _kwargs: dict[str, Any]) -> None:
+        win = windows[0]
+        win.events.loaded.fire()
+        tray._handle_quit()
+
+    fake_webview = _make_fake_webview(start_side_effect=on_start)
+    mutex = MagicMock()
+    mutex.acquire.return_value = True
+
+    app = DesktopApp(
+        paths=paths,
+        config=cfg,
+        supervisor=sup,
+        webview_module=fake_webview,
+        tray_controller=tray,
+        mutex=mutex,
+    )
+    assert app.resolve_app_icon_path() == staged_ico
+
+    with (
+        patch("src.desktop.app.sys.platform", "win32"),
+        patch("src.desktop.app._set_app_user_model_id") as mock_aumid,
+        patch("src.desktop.app._apply_win32_window_icon") as mock_apply_icon,
+    ):
+        assert app.run() == 0
+
+    mock_aumid.assert_called_once()
+    mock_apply_icon.assert_called_once_with("Second Brain", staged_ico)
+    start_kw = fake_webview.start_calls[0]
+    assert start_kw.get("icon") == str(staged_ico)
+
+
+def test_tray_controller_stop_joins_detached_thread_safely(tmp_path: Path):
+    paths = _make_paths(tmp_path)
+    fake_pystray = _make_fake_pystray()
+    tray = SystemTrayController(paths=paths, config=DesktopConfig(), pystray_module=fake_pystray)
+    assert tray.start() is True
+
+    icon = fake_pystray.created_icons[0]
+    mock_thread = MagicMock(spec=threading.Thread)
+    mock_thread.is_alive.return_value = True
+    icon._thread = mock_thread
+
+    tray.stop()
+    mock_thread.join.assert_called_once_with(timeout=2.0)
+
+    # Stopping from the tray thread itself must not attempt self-join
+    assert tray.start() is True
+    icon2 = fake_pystray.created_icons[1]
+    icon2._thread = threading.current_thread()
+    tray.stop()
+    assert icon2.stopped is True
 
 
 def test_second_instance_sends_focus_and_exits_without_starting_sidecars(tmp_path: Path):

@@ -611,13 +611,51 @@
     <header class="header">
       <div class="brand">
         <div class="brand-icon" aria-hidden="true">
-          <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
-            <line x1="7" y1="8.5" x2="17" y2="8.5" stroke="#38bdf8" stroke-width="1.8" stroke-linecap="round"/>
-            <line x1="7" y1="8.5" x2="12" y2="16.5" stroke="#38bdf8" stroke-width="1.8" stroke-linecap="round"/>
-            <line x1="17" y1="8.5" x2="12" y2="16.5" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
-            <circle cx="7" cy="8.5" r="2.7" fill="#38bdf8" stroke="#f8fafc" stroke-width="1"/>
-            <circle cx="17" cy="8.5" r="2.7" fill="#818cf8" stroke="#f8fafc" stroke-width="1"/>
-            <circle cx="12" cy="16.5" r="2.7" fill="#10b981" stroke="#f8fafc" stroke-width="1"/>
+          <svg width="30" height="30" viewBox="0 0 256 256" fill="none">
+            <defs>
+              <linearGradient id="sb-bg-a" x1="20" y1="16" x2="236" y2="240" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#0f172a"/>
+                <stop offset="55%" stop-color="#172042"/>
+                <stop offset="100%" stop-color="#1e1b4b"/>
+              </linearGradient>
+              <linearGradient id="sb-rim-a" x1="16" y1="16" x2="240" y2="240" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.9"/>
+                <stop offset="50%" stop-color="#818cf8" stop-opacity="0.65"/>
+                <stop offset="100%" stop-color="#10b981" stop-opacity="0.85"/>
+              </linearGradient>
+              <radialGradient id="sb-glow-a" cx="50%" cy="48%" r="44%">
+                <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.30"/>
+                <stop offset="55%" stop-color="#6366f1" stop-opacity="0.16"/>
+                <stop offset="100%" stop-color="#0f172a" stop-opacity="0"/>
+              </radialGradient>
+              <linearGradient id="sb-left-a" x1="56" y1="62" x2="122" y2="196" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#c7d2fe"/>
+                <stop offset="100%" stop-color="#6366f1"/>
+              </linearGradient>
+              <linearGradient id="sb-right-a" x1="134" y1="62" x2="202" y2="196" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#7dd3fc"/>
+                <stop offset="100%" stop-color="#0ea5e9"/>
+              </linearGradient>
+            </defs>
+            <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#sb-bg-a)" stroke="url(#sb-rim-a)" stroke-width="5"/>
+            <rect x="22" y="22" width="212" height="212" rx="46" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="2"/>
+            <circle cx="128" cy="126" r="94" fill="url(#sb-glow-a)"/>
+            <path d="M 118 64 C 90 60, 65 76, 62 102 C 49 112, 47 139, 60 155 C 59 179, 83 196, 114 192 L 118 192" fill="#6366f1" fill-opacity="0.22" stroke="url(#sb-left-a)" stroke-width="11.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M 104 88 C 84 89, 76 104, 86 116" fill="none" stroke="#c7d2fe" stroke-width="8.5" stroke-linecap="round"/>
+            <path d="M 75 138 C 74 156, 89 167, 108 164" fill="none" stroke="#a5b4fc" stroke-width="8.5" stroke-linecap="round"/>
+            <path d="M 138 64 L 168 64 L 193 89 L 193 112 L 203 124 L 203 146 L 188 160 L 188 178 L 170 192 L 138 192" fill="#38bdf8" fill-opacity="0.16" stroke="url(#sb-right-a)" stroke-width="11.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M 138 96 L 160 96 L 172 86" fill="none" stroke="#7dd3fc" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M 138 128 L 180 128" fill="none" stroke="#38bdf8" stroke-width="8" stroke-linecap="round"/>
+            <path d="M 138 160 L 158 160 L 170 172" fill="none" stroke="#34d399" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="174" cy="84" r="9.5" fill="#38bdf8" stroke="#0f172a" stroke-width="3"/>
+            <circle cx="182" cy="128" r="9.5" fill="#e0f2fe" stroke="#0f172a" stroke-width="3"/>
+            <circle cx="172" cy="174" r="9.5" fill="#10b981" stroke="#0f172a" stroke-width="3"/>
+            <line x1="128" y1="60" x2="128" y2="196" stroke="#64748b" stroke-width="6.5" stroke-linecap="round"/>
+            <line x1="112" y1="96" x2="144" y2="96" stroke="#a5b4fc" stroke-width="7.5" stroke-linecap="round"/>
+            <line x1="110" y1="128" x2="146" y2="128" stroke="#f8fafc" stroke-width="8" stroke-linecap="round"/>
+            <line x1="112" y1="160" x2="144" y2="160" stroke="#34d399" stroke-width="7.5" stroke-linecap="round"/>
+            <circle cx="128" cy="128" r="14.5" fill="#f8fafc" stroke="#38bdf8" stroke-width="4.5"/>
+            <circle cx="128" cy="128" r="5" fill="#0f172a"/>
           </svg>
         </div>
         <div>
@@ -853,7 +891,7 @@
 
       <div class="actions">
         <div class="actions-left">
-          <button type="button" class="btn" id="btn-pick-folder">
+          <button type="button" class="btn" id="btn-pick-folder" disabled>
             Use Existing Local Models Folder...
           </button>
           <button type="button" class="btn hidden" id="btn-return-workspace">
@@ -861,8 +899,8 @@
           </button>
         </div>
         <div class="actions-right">
-          <button type="button" class="btn btn-primary" id="btn-start-setup">
-            Start Setup
+          <button type="button" class="btn btn-primary" id="btn-start-setup" disabled>
+            Checking Configuration...
           </button>
         </div>
       </div>
@@ -1047,17 +1085,37 @@
           return;
         }
 
+        if (!state.initial) {
+          el.btnStartSetup.disabled = true;
+          el.btnPickFolder.disabled = true;
+          el.btnStartSetup.textContent = "Checking Configuration...";
+          return;
+        }
+
         el.btnPickFolder.disabled = false;
         el.btnReturnWorkspace.disabled = false;
 
-        const hw = (state.initial && state.initial.hardware) || {};
+        const hw = state.initial.hardware || {};
         const hasBlockers = Array.isArray(hw.blockers) && hw.blockers.length > 0;
+        const cudaBlocked =
+          state.selectedProfile === "cuda" &&
+          !state.forceCuda &&
+          (!hw.has_nvidia_cuda_capable_gpu || hw.cuda_disk_sufficient === false);
+
+        if (hasBlockers || cudaBlocked) {
+          el.btnStartSetup.disabled = true;
+          el.btnStartSetup.textContent = hasBlockers
+            ? "Resolve Hardware Blockers First"
+            : "CUDA Requirements Not Met";
+          return;
+        }
+
         el.btnStartSetup.disabled = false;
 
         if (state.mode === "switch") {
           el.btnStartSetup.textContent = isRetry ? "Retry Switch" : "Apply Compute Mode";
         } else {
-          el.btnStartSetup.textContent = isRetry ? "Retry Setup" : (hasBlockers ? "Attempt Setup Anyway" : "Start Setup");
+          el.btnStartSetup.textContent = isRetry ? "Retry Setup" : "Start Setup";
         }
       }
 
@@ -1267,6 +1325,7 @@
         renderHardware(data);
         renderModels(data.models || []);
         syncProfileSelectionUI();
+        updatePrimaryButtonLabel(false);
 
         if (data.progress) {
           renderProgress(data.progress);
@@ -1308,7 +1367,7 @@
       }
 
       async function handleStartOrSwitch() {
-        if (!window.pywebview || !window.pywebview.api || state.isRunning) return;
+        if (!window.pywebview || !window.pywebview.api || !state.initial || state.isRunning) return;
         state.isRunning = true;
         el.errorBox.classList.add("hidden");
         el.progressFill.classList.remove("is-error");
@@ -1348,7 +1407,7 @@
       }
 
       async function handlePickModelsFolder() {
-        if (!window.pywebview || !window.pywebview.api || state.isRunning) return;
+        if (!window.pywebview || !window.pywebview.api || !state.initial || state.isRunning) return;
         el.btnPickFolder.disabled = true;
         try {
           appendLog("Opening folder picker for local offline AI models...");

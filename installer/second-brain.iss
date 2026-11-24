@@ -44,9 +44,9 @@ Source: "..\build\staging\python\*"; DestDir: "{app}\python"; Flags: ignoreversi
 Source: "..\build\staging\venv\*"; DestDir: "{app}\venv"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Second Brain"; Filename: "{app}\venv\Scripts\pythonw.exe"; Parameters: """{app}\{#MyEntryRelPath}"""; WorkingDir: "{app}\app\backend"; IconFilename: "{app}\app\installer\second-brain.ico"; Comment: "Launch Second Brain Knowledge Repository"
+Name: "{group}\Second Brain"; Filename: "{app}\venv\Scripts\pythonw.exe"; Parameters: """{app}\{#MyEntryRelPath}"""; WorkingDir: "{app}\app\backend"; IconFilename: "{app}\app\installer\second-brain.ico"; AppUserModelID: "SecondBrain.Desktop.App"; Comment: "Launch Second Brain Knowledge Repository"
 Name: "{group}\Uninstall Second Brain"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\Second Brain"; Filename: "{app}\venv\Scripts\pythonw.exe"; Parameters: """{app}\{#MyEntryRelPath}"""; WorkingDir: "{app}\app\backend"; IconFilename: "{app}\app\installer\second-brain.ico"; Comment: "Launch Second Brain Knowledge Repository"; Tasks: desktopicon
+Name: "{userdesktop}\Second Brain"; Filename: "{app}\venv\Scripts\pythonw.exe"; Parameters: """{app}\{#MyEntryRelPath}"""; WorkingDir: "{app}\app\backend"; IconFilename: "{app}\app\installer\second-brain.ico"; AppUserModelID: "SecondBrain.Desktop.App"; Comment: "Launch Second Brain Knowledge Repository"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\venv\Scripts\pythonw.exe"; Parameters: """{app}\{#MyEntryRelPath}"""; WorkingDir: "{app}\app\backend"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
@@ -110,6 +110,8 @@ var
   RadioCpu: TNewRadioButton;
   RadioCuda: TNewRadioButton;
   ModeHintLabel: TNewStaticText;
+  InstallPrereqButton: TNewButton;
+  RecheckButton: TNewButton;
 
   DetectedCpuName: string;
   DetectedRamGB: Extended;
@@ -124,7 +126,8 @@ var
   WebView2Version: string;
   HasVcRedist: Boolean;
   UserOverrodeMode: Boolean;
-  PrereqPromptShown: Boolean;
+  IsCheckingConfig: Boolean;
+  SuppressRadioClick: Boolean;
 
 function StripUtf8Bom(const Text: string): string;
 begin
@@ -546,10 +549,47 @@ begin
     ModeHintLabel.Caption := 'Selected: Standard CPU Mode. Uses bundled CPU PyTorch + FastEmbed BM25 (~3.8 GB offline AI models downloaded on first launch).';
 end;
 
+procedure EvaluateHwPageGate();
+var
+  CudaEligible, AllChecksOk: Boolean;
+begin
+  CudaEligible := HasCompatibleNvidia and (DetectedFreeDiskMB >= 12288);
+
+  if Assigned(RadioCuda) and Assigned(RadioCpu) then
+  begin
+    RadioCuda.Enabled := CudaEligible;
+    if (not CudaEligible) and (not RadioCpu.Checked) then
+    begin
+      SuppressRadioClick := True;
+      RadioCuda.Checked := False;
+      RadioCpu.Checked := True;
+      SuppressRadioClick := False;
+      UpdateModeHintLabel();
+    end;
+  end;
+
+  if Assigned(InstallPrereqButton) then
+    InstallPrereqButton.Visible := (not HasVcRedist) or (not HasWebView2);
+
+  AllChecksOk :=
+    (not IsCheckingConfig) and
+    (DetectedRamMB >= 8192) and
+    (DetectedFreeDiskMB >= 8192) and
+    HasVcRedist and
+    HasWebView2 and
+    ((not Assigned(RadioCuda)) or (not RadioCuda.Checked) or CudaEligible);
+
+  if (not WizardSilent) and Assigned(HwPage) and (WizardForm.CurPageID = HwPage.ID) then
+    WizardForm.NextButton.Enabled := AllChecksOk;
+end;
+
 procedure OnComputeRadioClick(Sender: TObject);
 begin
+  if SuppressRadioClick or IsCheckingConfig then
+    Exit;
   UserOverrodeMode := True;
   UpdateModeHintLabel();
+  EvaluateHwPageGate();
 end;
 
 procedure RefreshHardwareDiagnosticsPage();
@@ -557,6 +597,16 @@ var
   GpuText, PrereqText, WarningsText, InstallDirLower: string;
   VramGB: Extended;
 begin
+  IsCheckingConfig := True;
+  if (not WizardSilent) and Assigned(HwPage) and (WizardForm.CurPageID = HwPage.ID) then
+    WizardForm.NextButton.Enabled := False;
+  if Assigned(RecheckButton) then
+    RecheckButton.Enabled := False;
+  if Assigned(StatusNoticeLabel) then
+    StatusNoticeLabel.Caption := 'Checking system configuration and prerequisites... Please wait.';
+  if not WizardSilent then
+    WizardForm.Update;
+
   ProbeCpuInfo();
   ProbeRamInfo();
   ProbeNvidiaGpu();
@@ -592,12 +642,12 @@ begin
   if HasWebView2 then
     PrereqText := 'WebView2 Runtime: Installed (' + WebView2Version + ')'
   else
-    PrereqText := 'WebView2 Runtime: Missing (Edge --app fallback / download offered)';
+    PrereqText := 'WebView2 Runtime: [REQUIRED - MISSING]';
 
   if HasVcRedist then
-    PrereqText := PrereqText + '   |   VC++ x64: Installed'
+    PrereqText := PrereqText + '  |  VC++ x64: Installed'
   else
-    PrereqText := PrereqText + '   |   VC++ x64: Missing (download offered)';
+    PrereqText := PrereqText + '  |  VC++ x64: [REQUIRED - MISSING]';
   PrereqLabel.Caption := PrereqText;
 
   WarningsText := '';
@@ -605,13 +655,13 @@ begin
     WarningsText := 'BLOCKER: At least 8.0 GB system RAM is required.'
   else if DetectedFreeDiskMB < 8192 then
     WarningsText := 'BLOCKER: At least 8.0 GB free disk space is required on the target drive.'
+  else if (not HasWebView2) or (not HasVcRedist) then
+    WarningsText := 'BLOCKER: Missing required Microsoft runtime prerequisite(s). Click "Download Missing Runtime(s)", install them, then click "Re-check Config" to unlock Next.'
   else
   begin
     InstallDirLower := LowerCase(WizardDirValue);
     if Pos('onedrive', InstallDirLower) > 0 then
       WarningsText := 'Note: Target folder is under OneDrive. Avoid placing your data directory inside OneDrive to prevent SQLite/Qdrant lock conflicts.'
-    else if (not HasWebView2) or (not HasVcRedist) then
-      WarningsText := 'Prerequisite notice: Missing Microsoft runtime component(s). You will be prompted to download them before setup continues.'
     else if DetectedRamMB < 16384 then
       WarningsText := 'Advisory: < 16 GB RAM detected. Use Fast CPU PDF upload mode for large documents.'
     else
@@ -621,13 +671,40 @@ begin
 
   if not UserOverrodeMode then
   begin
+    SuppressRadioClick := True;
     if HasCompatibleNvidia and (DetectedFreeDiskMB >= 12288) then
       RadioCuda.Checked := True
     else
       RadioCpu.Checked := True;
+    SuppressRadioClick := False;
   end;
 
   UpdateModeHintLabel();
+
+  IsCheckingConfig := False;
+  if Assigned(RecheckButton) then
+    RecheckButton.Enabled := True;
+  EvaluateHwPageGate();
+end;
+
+procedure OnInstallPrereqClick(Sender: TObject);
+var
+  ErrCode: Integer;
+begin
+  if not HasWebView2 then
+    ShellExec('open', WEBVIEW2_DOWNLOAD_URL, '', '', SW_SHOWNORMAL, ewNoWait, ErrCode);
+  if not HasVcRedist then
+    ShellExec('open', VCREDIST_DOWNLOAD_URL, '', '', SW_SHOWNORMAL, ewNoWait, ErrCode);
+
+  if Assigned(StatusNoticeLabel) then
+    StatusNoticeLabel.Caption := 'Opened Microsoft runtime download link(s) in your browser. Finish installing the runtime(s), then click "Re-check Config" to continue.';
+end;
+
+procedure OnRecheckClick(Sender: TObject);
+begin
+  if IsCheckingConfig then
+    Exit;
+  RefreshHardwareDiagnosticsPage();
 end;
 
 function ReadConfiguredComputeProfile(const ConfigPath: string): string;
@@ -648,11 +725,12 @@ end;
 
 procedure InitializeWizard();
 var
-  TopPos: Integer;
+  TopPos, ButtonHeight: Integer;
   ExistingConfigPath, ExistingProfile, ParamProfile: string;
 begin
   UserOverrodeMode := False;
-  PrereqPromptShown := False;
+  IsCheckingConfig := False;
+  SuppressRadioClick := False;
 
   HwPage := CreateCustomPage(
     wpSelectDir,
@@ -667,98 +745,119 @@ begin
   SummaryHeaderLabel.Left := 0;
   SummaryHeaderLabel.Top := TopPos;
   SummaryHeaderLabel.Width := HwPage.SurfaceWidth;
-  SummaryHeaderLabel.Height := ScaleY(18);
+  SummaryHeaderLabel.Height := ScaleY(14);
   SummaryHeaderLabel.Font.Style := [fsBold];
   SummaryHeaderLabel.Caption := 'Detected System Profile';
-  TopPos := TopPos + ScaleY(22);
+  TopPos := TopPos + ScaleY(15);
 
   CpuLabel := TNewStaticText.Create(HwPage);
   CpuLabel.Parent := HwPage.Surface;
   CpuLabel.Left := ScaleX(8);
   CpuLabel.Top := TopPos;
   CpuLabel.Width := HwPage.SurfaceWidth - ScaleX(8);
-  CpuLabel.Height := ScaleY(18);
-  TopPos := TopPos + ScaleY(20);
+  CpuLabel.Height := ScaleY(14);
+  TopPos := TopPos + ScaleY(14);
 
   RamLabel := TNewStaticText.Create(HwPage);
   RamLabel.Parent := HwPage.Surface;
   RamLabel.Left := ScaleX(8);
   RamLabel.Top := TopPos;
   RamLabel.Width := HwPage.SurfaceWidth - ScaleX(8);
-  RamLabel.Height := ScaleY(18);
-  TopPos := TopPos + ScaleY(20);
+  RamLabel.Height := ScaleY(14);
+  TopPos := TopPos + ScaleY(14);
 
   GpuLabel := TNewStaticText.Create(HwPage);
   GpuLabel.Parent := HwPage.Surface;
   GpuLabel.Left := ScaleX(8);
   GpuLabel.Top := TopPos;
   GpuLabel.Width := HwPage.SurfaceWidth - ScaleX(8);
-  GpuLabel.Height := ScaleY(18);
-  TopPos := TopPos + ScaleY(20);
+  GpuLabel.Height := ScaleY(14);
+  TopPos := TopPos + ScaleY(14);
 
   DiskLabel := TNewStaticText.Create(HwPage);
   DiskLabel.Parent := HwPage.Surface;
   DiskLabel.Left := ScaleX(8);
   DiskLabel.Top := TopPos;
   DiskLabel.Width := HwPage.SurfaceWidth - ScaleX(8);
-  DiskLabel.Height := ScaleY(18);
-  TopPos := TopPos + ScaleY(20);
+  DiskLabel.Height := ScaleY(14);
+  TopPos := TopPos + ScaleY(14);
 
   PrereqLabel := TNewStaticText.Create(HwPage);
   PrereqLabel.Parent := HwPage.Surface;
   PrereqLabel.Left := ScaleX(8);
   PrereqLabel.Top := TopPos;
   PrereqLabel.Width := HwPage.SurfaceWidth - ScaleX(8);
-  PrereqLabel.Height := ScaleY(18);
-  TopPos := TopPos + ScaleY(22);
+  PrereqLabel.Height := ScaleY(14);
+  TopPos := TopPos + ScaleY(15);
 
   StatusNoticeLabel := TNewStaticText.Create(HwPage);
   StatusNoticeLabel.Parent := HwPage.Surface;
   StatusNoticeLabel.Left := ScaleX(8);
   StatusNoticeLabel.Top := TopPos;
   StatusNoticeLabel.Width := HwPage.SurfaceWidth - ScaleX(8);
-  StatusNoticeLabel.Height := ScaleY(34);
+  StatusNoticeLabel.Height := ScaleY(38);
   StatusNoticeLabel.WordWrap := True;
-  TopPos := TopPos + ScaleY(38);
+  TopPos := TopPos + ScaleY(39);
 
   ModeHeaderLabel := TNewStaticText.Create(HwPage);
   ModeHeaderLabel.Parent := HwPage.Surface;
   ModeHeaderLabel.Left := 0;
   ModeHeaderLabel.Top := TopPos;
   ModeHeaderLabel.Width := HwPage.SurfaceWidth;
-  ModeHeaderLabel.Height := ScaleY(18);
+  ModeHeaderLabel.Height := ScaleY(14);
   ModeHeaderLabel.Font.Style := [fsBold];
   ModeHeaderLabel.Caption := 'Compute Mode Selection';
-  TopPos := TopPos + ScaleY(22);
+  TopPos := TopPos + ScaleY(16);
 
   RadioCpu := TNewRadioButton.Create(HwPage);
   RadioCpu.Parent := HwPage.Surface;
   RadioCpu.Left := ScaleX(8);
   RadioCpu.Top := TopPos;
   RadioCpu.Width := HwPage.SurfaceWidth - ScaleX(8);
-  RadioCpu.Height := ScaleY(20);
+  RadioCpu.Height := ScaleY(16);
   RadioCpu.Caption := 'Standard CPU Mode (~3.8 GB models)';
   RadioCpu.Checked := True;
-  RadioCpu.OnClick := @OnComputeRadioClick;
-  TopPos := TopPos + ScaleY(22);
+  TopPos := TopPos + ScaleY(17);
 
   RadioCuda := TNewRadioButton.Create(HwPage);
   RadioCuda.Parent := HwPage.Surface;
   RadioCuda.Left := ScaleX(8);
   RadioCuda.Top := TopPos;
   RadioCuda.Width := HwPage.SurfaceWidth - ScaleX(8);
-  RadioCuda.Height := ScaleY(20);
+  RadioCuda.Height := ScaleY(16);
   RadioCuda.Caption := 'NVIDIA GPU Accelerated Mode (CUDA 12.4, +2.5 GB runtime)';
-  RadioCuda.OnClick := @OnComputeRadioClick;
-  TopPos := TopPos + ScaleY(24);
+  TopPos := TopPos + ScaleY(17);
 
   ModeHintLabel := TNewStaticText.Create(HwPage);
   ModeHintLabel.Parent := HwPage.Surface;
   ModeHintLabel.Left := ScaleX(8);
   ModeHintLabel.Top := TopPos;
   ModeHintLabel.Width := HwPage.SurfaceWidth - ScaleX(8);
-  ModeHintLabel.Height := ScaleY(36);
+  ModeHintLabel.Height := ScaleY(37);
   ModeHintLabel.WordWrap := True;
+  TopPos := TopPos + ScaleY(38);
+
+  ButtonHeight := ScaleY(23);
+
+  InstallPrereqButton := TNewButton.Create(HwPage);
+  InstallPrereqButton.Parent := HwPage.Surface;
+  InstallPrereqButton.Left := ScaleX(8);
+  InstallPrereqButton.Top := TopPos;
+  InstallPrereqButton.Width := ScaleX(190);
+  InstallPrereqButton.Height := ButtonHeight;
+  InstallPrereqButton.Caption := 'Download Missing Runtime(s)';
+  InstallPrereqButton.Visible := False;
+  InstallPrereqButton.OnClick := @OnInstallPrereqClick;
+
+  RecheckButton := TNewButton.Create(HwPage);
+  RecheckButton.Parent := HwPage.Surface;
+  RecheckButton.Left := InstallPrereqButton.Left + InstallPrereqButton.Width + ScaleX(10);
+  RecheckButton.Top := TopPos;
+  RecheckButton.Width := ScaleX(130);
+  RecheckButton.Height := ButtonHeight;
+  RecheckButton.Caption := 'Re-check Config';
+  RecheckButton.Visible := True;
+  RecheckButton.OnClick := @OnRecheckClick;
 
   ParamProfile := LowerCase(Trim(ExpandConstant('{param:PROFILE|}')));
   ExistingConfigPath := ExpandConstant('{localappdata}\SecondBrain\config\desktop_config.json');
@@ -780,48 +879,42 @@ begin
     RadioCpu.Checked := True;
     UserOverrodeMode := True;
   end;
+
+  RadioCpu.OnClick := @OnComputeRadioClick;
+  RadioCuda.OnClick := @OnComputeRadioClick;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if Assigned(HwPage) and (CurPageID = HwPage.ID) then
-    RefreshHardwareDiagnosticsPage();
-end;
-
-function PromptPrerequisiteDownloads(): Boolean;
-var
-  MissingMsg: string;
-  ErrCode: Integer;
-begin
-  Result := True;
-  if WizardSilent or PrereqPromptShown or (HasWebView2 and HasVcRedist) then
-    Exit;
-
-  PrereqPromptShown := True;
-  MissingMsg := 'The following recommended Windows runtime prerequisites were not detected:' + #13#10 + #13#10;
-  if not HasWebView2 then
-    MissingMsg := MissingMsg + '- Microsoft Edge WebView2 Runtime (desktop window host)' + #13#10;
-  if not HasVcRedist then
-    MissingMsg := MissingMsg + '- Microsoft Visual C++ 2015-2022 Redistributable (x64)' + #13#10;
-  MissingMsg := MissingMsg + #13#10 + 'Would you like to open the official Microsoft download link(s) in your browser now?';
-
-  if SuppressibleMsgBox(MissingMsg, mbConfirmation, MB_YESNO, IDNO) = IDYES then
   begin
-    if not HasWebView2 then
-      ShellExec('open', WEBVIEW2_DOWNLOAD_URL, '', '', SW_SHOWNORMAL, ewNoWait, ErrCode);
-    if not HasVcRedist then
-      ShellExec('open', VCREDIST_DOWNLOAD_URL, '', '', SW_SHOWNORMAL, ewNoWait, ErrCode);
+    if not WizardSilent then
+      WizardForm.NextButton.Enabled := False;
+    RefreshHardwareDiagnosticsPage();
+  end
+  else if Assigned(HwPage) and (CurPageID <> HwPage.ID) then
+  begin
+    if (not WizardSilent) and (CurPageID <> wpLicense) and (CurPageID <> wpInstalling) then
+      WizardForm.NextButton.Enabled := True;
   end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  WarnMsg: string;
+  MissingMsg: string;
+  WasCudaSelected: Boolean;
 begin
   Result := True;
   if not Assigned(HwPage) or (CurPageID <> HwPage.ID) then
     Exit;
 
+  if IsCheckingConfig then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  WasCudaSelected := Assigned(RadioCuda) and RadioCuda.Checked;
   RefreshHardwareDiagnosticsPage();
 
   if DetectedRamMB < 8192 then
@@ -848,35 +941,46 @@ begin
     Exit;
   end;
 
-  if RadioCuda.Checked and ((not HasCompatibleNvidia) or (DetectedFreeDiskMB < 12288)) then
+  if (not WizardSilent) and ((not HasWebView2) or (not HasVcRedist)) then
+  begin
+    MissingMsg := 'The following required Microsoft runtime prerequisites were not detected:' + #13#10 + #13#10;
+    if not HasWebView2 then
+      MissingMsg := MissingMsg + '- Microsoft Edge WebView2 Runtime' + #13#10;
+    if not HasVcRedist then
+      MissingMsg := MissingMsg + '- Microsoft Visual C++ 2015-2022 Redistributable (x64)' + #13#10;
+    MissingMsg := MissingMsg + #13#10 + 'Click "Download Missing Runtime(s)", install the missing component(s), and then click "Re-check Config" to continue.';
+    SuppressibleMsgBox(MissingMsg, mbError, MB_OK, IDOK);
+    Result := False;
+    Exit;
+  end;
+
+  if (RadioCuda.Checked or WasCudaSelected) and ((not HasCompatibleNvidia) or (DetectedFreeDiskMB < 12288)) then
   begin
     if WizardSilent then
     begin
+      SuppressRadioClick := True;
       RadioCpu.Checked := True;
+      SuppressRadioClick := False;
       UserOverrodeMode := True;
       UpdateModeHintLabel();
     end
     else
     begin
-      WarnMsg := 'NVIDIA GPU Accelerated Mode (CUDA 12.4) warning:' + #13#10 + #13#10;
-      if not HasCompatibleNvidia then
-        WarnMsg := WarnMsg + '- No NVIDIA GPU with >= 4.0 GB VRAM was detected (' + DetectedGpuName + ').' + #13#10;
-      if DetectedFreeDiskMB < 12288 then
-        WarnMsg := WarnMsg + Format('- Less than 12.0 GB free disk space detected (%.1f GB available).', [DetectedFreeDiskGB]) + #13#10;
-      WarnMsg := WarnMsg + #13#10 + 'Do you still want to proceed with CUDA 12.4 Mode? (Choose No to switch to Standard CPU Mode.)';
-
-      if SuppressibleMsgBox(WarnMsg, mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) <> IDYES then
-      begin
-        RadioCpu.Checked := True;
-        UserOverrodeMode := True;
-        UpdateModeHintLabel();
-        Result := False;
-        Exit;
-      end;
+      SuppressRadioClick := True;
+      RadioCpu.Checked := True;
+      SuppressRadioClick := False;
+      UpdateModeHintLabel();
+      EvaluateHwPageGate();
+      SuppressibleMsgBox(
+        'NVIDIA GPU Accelerated Mode (CUDA 12.4) requires an NVIDIA GPU with >= 4.0 GB VRAM and >= 12.0 GB free disk space. Standard CPU Mode has been selected instead.',
+        mbInformation,
+        MB_OK,
+        IDOK
+      );
+      Result := False;
+      Exit;
     end;
   end;
-
-  PromptPrerequisiteDownloads();
 end;
 
 procedure UpdateVenvPyvenvCfg();

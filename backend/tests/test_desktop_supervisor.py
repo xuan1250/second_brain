@@ -6,6 +6,7 @@ import json
 import socket
 import subprocess
 import sys
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -573,6 +574,70 @@ def test_sidecar_supervisor_lifecycle_and_ordered_shutdown(tmp_path: Path):
     assert (paths.logs_dir / "launcher.log").is_file()
     assert (paths.logs_dir / "qdrant.log").is_file()
     assert (paths.logs_dir / "backend.log").is_file()
+
+
+def test_terminate_process_skips_pipe_close_when_reader_still_alive(tmp_path: Path):
+    paths = DesktopPaths(app_dir=tmp_path, user_data_dir=tmp_path / "user")
+    supervisor = SidecarSupervisor(paths, DesktopConfig(), api_port=18011, qdrant_port=16344)
+
+    proc_alive = _make_mock_popen_proc()
+    proc_alive.stdout = MagicMock()
+    live_reader = MagicMock(spec=threading.Thread)
+    live_reader.is_alive.return_value = True
+
+    supervisor._terminate_process(proc_alive, "Backend", timeout_sec=0.1, reader_thread=live_reader)
+    live_reader.join.assert_called_once_with(timeout=1.5)
+    proc_alive.stdout.close.assert_not_called()
+
+    proc_done = _make_mock_popen_proc()
+    proc_done.stdout = MagicMock()
+    finished_reader = MagicMock(spec=threading.Thread)
+    finished_reader.is_alive.side_effect = [True, False]
+
+    supervisor._terminate_process(proc_done, "Backend", timeout_sec=0.1, reader_thread=finished_reader)
+    finished_reader.join.assert_called_once_with(timeout=1.5)
+    proc_done.stdout.close.assert_called_once()
+
+
+def test_terminate_process_kills_win32_process_tree_for_popen_only(tmp_path: Path):
+    paths = DesktopPaths(app_dir=tmp_path, user_data_dir=tmp_path / "user")
+    supervisor = SidecarSupervisor(paths, DesktopConfig(), api_port=18012, qdrant_port=16345)
+
+    plain_mock_proc = _make_mock_popen_proc()
+    popen_spec_proc = MagicMock(spec=subprocess.Popen)
+    popen_spec_proc.pid = 9876
+    popen_spec_proc.poll.return_value = None
+    popen_spec_proc.wait.return_value = 0
+    popen_spec_proc.stdout = None
+
+    with (
+        patch("src.desktop.supervisor.sys.platform", "win32"),
+        patch("src.desktop.supervisor._kill_process_tree_win32") as mock_kill_tree,
+    ):
+        supervisor._terminate_process(plain_mock_proc, "MockOnly", timeout_sec=0.1)
+        mock_kill_tree.assert_not_called()
+
+        supervisor._terminate_process(popen_spec_proc, "RealPopen", timeout_sec=0.1)
+        mock_kill_tree.assert_called_once_with(9876)
+
+
+def test_sidecar_supervisor_shutdown_closes_job_object_when_stop_raises(tmp_path: Path):
+    paths = DesktopPaths(app_dir=tmp_path, user_data_dir=tmp_path / "user")
+    supervisor = SidecarSupervisor(paths, DesktopConfig(), api_port=18013, qdrant_port=16346)
+    supervisor._ensure_loggers()
+
+    mock_job = MagicMock()
+    with (
+        patch.object(supervisor, "_job_object", mock_job),
+        patch.object(supervisor, "stop_backend", side_effect=RuntimeError("backend stop failure")),
+        patch.object(supervisor, "stop_qdrant") as mock_stop_qdrant,
+    ):
+        with pytest.raises(RuntimeError, match="backend stop failure"):
+            supervisor.shutdown(timeout_sec=0.2)
+
+    mock_stop_qdrant.assert_called_once_with(timeout_sec=0.2)
+    mock_job.close.assert_called_once()
+    assert supervisor._log_handlers == {}
 
 
 # ==============================================================================

@@ -1,10 +1,26 @@
 """Consoleless `pythonw.exe` launcher entrypoint for Second Brain Desktop."""
 from __future__ import annotations
 
+import ctypes
 import multiprocessing
 import os
 import sys
 from pathlib import Path
+
+DESKTOP_APP_USER_MODEL_ID = "SecondBrain.Desktop.App"
+
+
+def _set_app_user_model_id() -> None:
+    """Assign an explicit Windows AppUserModelID for taskbar icon and grouping parity."""
+    if sys.platform != "win32":
+        return
+    try:
+        shell32 = ctypes.windll.shell32
+        shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [ctypes.c_wchar_p]
+        shell32.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_long
+        shell32.SetCurrentProcessExplicitAppUserModelID(DESKTOP_APP_USER_MODEL_ID)
+    except Exception:
+        pass
 
 
 def _guard_windowless_stdio() -> None:
@@ -46,6 +62,8 @@ def main() -> int:
     """Initialize frozen/spawn safety, stdio guards, and invoke `src.desktop.app.main()`."""
     multiprocessing.freeze_support()
     _guard_windowless_stdio()
+    if sys.platform == "win32" and "--quit" not in sys.argv[1:]:
+        _set_app_user_model_id()
     _configure_runtime_paths()
 
     from src.desktop.app import main as desktop_main

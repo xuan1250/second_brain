@@ -24,6 +24,23 @@ from src.desktop.job_object import WindowsJobObject
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 _LOG_MAX_BYTES = 5 * 1024 * 1024
 _LOG_BACKUP_COUNT = 3
+_REAL_POPEN_TYPE = subprocess.Popen
+
+
+def _kill_process_tree_win32(pid: int) -> None:
+    """Terminate a Windows process and all descendants via `taskkill /T /F`."""
+    if sys.platform != "win32" or pid <= 0:
+        return
+    try:
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5.0,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+    except Exception:
+        pass
 
 
 class SidecarSupervisor:
@@ -287,39 +304,52 @@ class SidecarSupervisor:
         timeout_sec: float,
         reader_thread: threading.Thread | None = None,
     ) -> None:
-        """Gracefully terminate a child process with timeout and hard-kill fallback."""
+        """Gracefully terminate a child process tree with timeout and hard-kill fallback."""
         if proc is None:
             return
 
         if proc.poll() is None:
             self._log_launcher(logging.INFO, "Stopping %s (pid=%s)...", service_name, getattr(proc, "pid", "?"))
-            try:
-                proc.terminate()
-                proc.wait(timeout=timeout_sec)
-            except subprocess.TimeoutExpired:
-                self._log_launcher(
-                    logging.WARNING,
-                    "%s did not exit within %.1fs; forcing kill.",
-                    service_name,
-                    timeout_sec,
-                )
+            if (
+                sys.platform == "win32"
+                and isinstance(proc, _REAL_POPEN_TYPE)
+                and isinstance(proc.pid, int)
+                and not isinstance(proc.pid, bool)
+                and proc.pid > 0
+            ):
+                _kill_process_tree_win32(proc.pid)
+
+            if proc.poll() is None:
                 try:
-                    proc.kill()
-                    proc.wait(timeout=2.0)
-                except (subprocess.TimeoutExpired, OSError):
+                    proc.terminate()
+                    proc.wait(timeout=timeout_sec)
+                except subprocess.TimeoutExpired:
+                    self._log_launcher(
+                        logging.WARNING,
+                        "%s did not exit within %.1fs; forcing kill.",
+                        service_name,
+                        timeout_sec,
+                    )
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=2.0)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                except OSError:
                     pass
-            except OSError:
-                pass
 
         if reader_thread is not None and reader_thread.is_alive():
             reader_thread.join(timeout=1.5)
 
-        pipe = getattr(proc, "stdout", None)
-        if pipe is not None:
-            try:
-                pipe.close()
-            except Exception:
-                pass
+        # Only close stdout when the reader thread has exited; closing while blocked
+        # in `for raw_line in pipe:` deadlocks on CPython's internal pipe lock.
+        if reader_thread is None or not reader_thread.is_alive():
+            pipe = getattr(proc, "stdout", None)
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
 
     def start_qdrant(self) -> subprocess.Popen[str]:
         """Launch `qdrant.exe` on `127.0.0.1:<qdrant_port>` and await `/readyz`."""
@@ -470,11 +500,17 @@ class SidecarSupervisor:
         """Perform ordered shutdown: stop FastAPI first, then Qdrant, then Job Object and logs."""
         with self._lock:
             self._log_launcher(logging.INFO, "Initiating ordered sidecar shutdown...")
-            self.stop_backend(timeout_sec=timeout_sec)
-            self.stop_qdrant(timeout_sec=timeout_sec)
-            self._job_object.close()
-            self._log_launcher(logging.INFO, "Sidecar shutdown complete.")
-            self._close_loggers()
+            try:
+                try:
+                    self.stop_backend(timeout_sec=timeout_sec)
+                finally:
+                    self.stop_qdrant(timeout_sec=timeout_sec)
+            finally:
+                try:
+                    self._job_object.close()
+                finally:
+                    self._log_launcher(logging.INFO, "Sidecar shutdown complete.")
+                    self._close_loggers()
 
     def __enter__(self) -> SidecarSupervisor:
         self.start()

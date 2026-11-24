@@ -941,12 +941,33 @@ async def verify_key_endpoint(
             if (payload.provider == "openai_compatible" and raw_base_url is not None)
             else None
         )
+        default_llm_provider_update: str | None = None
+        default_llm_model_update: str | None = None
+        if valid:
+            ws = await get_workspace_settings(session)
+            current_default = (ws.default_llm_provider or "").strip().lower()
+            should_promote = not current_default
+            if not should_promote:
+                cur_key, _, cur_base_url = resolve_provider_credential(current_default, settings)
+                should_promote = cur_key is None or (
+                    current_default == "openai_compatible" and not cur_base_url
+                )
+            if should_promote:
+                default_llm_provider_update = payload.provider
+                default_llm_model_update = test_model
+
         await update_workspace_settings(
             session=session,
             api_keys=api_keys_update,
             key_validations={payload.provider: val_entry},
             llm_compat_base_url=compat_url_update,
+            default_llm_provider=default_llm_provider_update,
+            default_llm_model=default_llm_model_update,
         )
+        if default_llm_provider_update is not None:
+            settings.llm.provider = default_llm_provider_update
+        if default_llm_model_update is not None:
+            settings.llm.model_name = default_llm_model_update
     else:
         _key_validations[payload.provider] = val_entry
 

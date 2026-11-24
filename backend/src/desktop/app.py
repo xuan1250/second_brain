@@ -50,6 +50,25 @@ _LOG_MAX_BYTES = 5 * 1024 * 1024
 _LOG_BACKUP_COUNT = 3
 _SETUP_HTML_PATH = Path(__file__).with_name("setup_ui.html").resolve()
 _SW_RESTORE = 9
+DESKTOP_APP_USER_MODEL_ID = "SecondBrain.Desktop.App"
+_WM_SETICON = 0x0080
+_ICON_SMALL = 0
+_ICON_BIG = 1
+_IMAGE_ICON = 1
+_LR_LOADFROMFILE = 0x0010
+
+
+def _set_app_user_model_id() -> None:
+    """Assign an explicit Windows AppUserModelID for taskbar icon and grouping parity."""
+    if sys.platform != "win32":
+        return
+    try:
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [ctypes.c_wchar_p]
+        shell32.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_long
+        shell32.SetCurrentProcessExplicitAppUserModelID(DESKTOP_APP_USER_MODEL_ID)
+    except Exception:
+        pass
 
 
 def _find_msedge_exe() -> Path | None:
@@ -93,6 +112,64 @@ def _focus_win32_window(title: str = "Second Brain") -> bool:
         user32.ShowWindow(ctypes.c_void_p(hwnd), _SW_RESTORE)
         user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
         return True
+    except Exception:
+        return False
+
+
+def _apply_win32_window_icon(window_title: str, ico_path: Path) -> bool:
+    """Apply small (16x16) and large (32x32) Win32 title-bar/taskbar icons from `ico_path`."""
+    if sys.platform != "win32" or not ico_path.is_file():
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        user32.FindWindowW.restype = ctypes.c_void_p
+        user32.LoadImageW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint32,
+        ]
+        user32.LoadImageW.restype = ctypes.c_void_p
+        user32.SendMessageW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+        ]
+        user32.SendMessageW.restype = ctypes.c_ssize_t
+
+        hwnd = user32.FindWindowW(None, window_title)
+        if not hwnd:
+            return False
+
+        ico_str = str(ico_path)
+        hicon_small = user32.LoadImageW(
+            None, ico_str, _IMAGE_ICON, 16, 16, _LR_LOADFROMFILE
+        )
+        hicon_big = user32.LoadImageW(
+            None, ico_str, _IMAGE_ICON, 32, 32, _LR_LOADFROMFILE
+        )
+        applied = False
+        if hicon_small:
+            user32.SendMessageW(
+                ctypes.c_void_p(hwnd),
+                _WM_SETICON,
+                _ICON_SMALL,
+                ctypes.c_void_p(hicon_small),
+            )
+            applied = True
+        if hicon_big:
+            user32.SendMessageW(
+                ctypes.c_void_p(hwnd),
+                _WM_SETICON,
+                _ICON_BIG,
+                ctypes.c_void_p(hicon_big),
+            )
+            applied = True
+        return applied
     except Exception:
         return False
 
@@ -417,6 +494,21 @@ class DesktopApp:
         if effective_mode == "switch":
             return f"{base_uri}?mode=switch"
         return base_uri
+
+    def resolve_app_icon_path(self) -> Path | None:
+        """Resolve `second-brain.ico` across packaged installer and dev repo layouts."""
+        candidates: list[Path] = [
+            self.paths.app_dir / "app" / "installer" / "second-brain.ico",
+            self.paths.app_dir / "installer" / "second-brain.ico",
+        ]
+        module_parents = Path(__file__).resolve().parents
+        if len(module_parents) > 3:
+            candidates.append(module_parents[3] / "installer" / "second-brain.ico")
+
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return None
 
     def needs_bootstrap(self) -> bool:
         """Determine whether first-run runtime/model setup must gate sidecar startup."""
@@ -1172,10 +1264,16 @@ class DesktopApp:
         return False
 
     def _on_window_loaded(self) -> None:
-        """Attach external-link interception script whenever a document finishes loading."""
+        """Attach external-link interception script and Win32 icon whenever a document finishes loading."""
         window = self._window
         if window is None:
             return
+        if sys.platform == "win32":
+            ico_path = self.resolve_app_icon_path()
+            if ico_path is not None:
+                raw_title = getattr(window, "title", None)
+                title = raw_title if isinstance(raw_title, str) and raw_title else "Second Brain"
+                _apply_win32_window_icon(title, ico_path)
         try:
             js = _build_external_link_interceptor_js(self.supervisor.api_port)
             window.evaluate_js(js)
@@ -1271,6 +1369,8 @@ class DesktopApp:
 
     def run(self) -> int:
         """Run the desktop application lifecycle until explicit quit or window termination."""
+        if sys.platform == "win32":
+            _set_app_user_model_id()
         self.paths.ensure_directories(self.config)
         self._ensure_logger()
 
@@ -1328,6 +1428,8 @@ class DesktopApp:
                 }
                 if sys.platform == "win32":
                     start_kwargs["gui"] = "edgechromium"
+                if (ico_path := self.resolve_app_icon_path()) is not None:
+                    start_kwargs["icon"] = str(ico_path)
 
                 webview_mod.start(**start_kwargs)
             except Exception:

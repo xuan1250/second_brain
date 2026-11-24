@@ -6,7 +6,6 @@ import {
   PanelResizeHandle,
 } from "react-resizable-panels";
 import {
-  BrainCircuit,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -106,9 +105,11 @@ export const WorkspaceLayout: React.FC = () => {
           </button>
 
           <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm">
-              <BrainCircuit className="h-4 w-4" />
-            </div>
+            <img
+              src="/second-brain.svg"
+              alt="Second Brain"
+              className="h-7 w-7 rounded-lg shadow-sm shrink-0 select-none"
+            />
             <div>
               <h1 className="text-xs font-bold tracking-wide text-white">
                 SECOND BRAIN WORKSPACE
