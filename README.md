@@ -44,13 +44,15 @@ Requires Docker with Compose v2 and at least one LLM API key.
 
 The first ingestion downloads ~2 GB of embedding models into `./data/models`. See [docs/deployment.md](docs/deployment.md) for detailed VRAM breakdown and hardware setup.
 
+**No Docker?** Windows 10/11 users can install the native desktop app instead (`SecondBrain-Setup-x64.exe`, built with [`scripts/build_windows_installer.ps1`](scripts/build_windows_installer.ps1)); see [Windows Desktop Application](docs/deployment.md#6-windows-desktop-application-exe).
+
 ## Documentation
 
 | Read | For |
 |---|---|
 | [docs/system-architecture.md](docs/system-architecture.md) | How the pieces fit, invariants, and why each technology was chosen |
 | [docs/development.md](docs/development.md) | Running locally with `uv` + Vite, configuration and env vars, CLI batch ingestion, tests |
-| [docs/deployment.md](docs/deployment.md) | Docker topology, storage volumes, exposure model, backup/restore |
+| [docs/deployment.md](docs/deployment.md) | Docker topology, storage volumes, exposure model, backup/restore, Windows Desktop installer |
 | [docs/docker-beginner-guide.md](docs/docker-beginner-guide.md) | Step-by-step beginner guide: install software, prepare environment, and launch with Docker |
 | [docs/ai-onboarding-copilot.md](docs/ai-onboarding-copilot.md) | Uploadable prompt file for Claude, ChatGPT, or Gemini to guide users step-by-step interactively |
 | [docs/presentations/crag_workflow_explained.html](docs/presentations/crag_workflow_explained.html) | Interactive visual presentation of the 7-node CRAG engine, prompt flows, and 3-tier databases |
@@ -61,4 +63,6 @@ The first ingestion downloads ~2 GB of embedding models into `./data/models`. Se
 - [`backend/`](backend/) — FastAPI app, ingestion pipeline, CRAG engine, tests (Python 3.13, managed with `uv`)
 - [`frontend/`](frontend/) — React 19 + Vite + Tailwind CSS v4 SPA
 - [`docs/`](docs/) — Architecture, beginner setup guide, deployment, development, and interactive CRAG presentation
+- [`installer/`](installer/) — Inno Setup 6 script, launcher entry, brand icon (`second-brain.ico` / `.svg`), and third-party notices for the Windows desktop installer
+- [`scripts/`](scripts/) — [`build_windows_installer.ps1`](scripts/build_windows_installer.ps1) staging and installer build pipeline
 - `data/` — local documents, SQLite databases (`data/db/`), parsed caches, and model caches (git-ignored)

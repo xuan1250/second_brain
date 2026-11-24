@@ -70,7 +70,7 @@ Settings are loaded by [`src/config.py`](../backend/src/config.py) (`load_settin
 
 **LLM Credential Resolution Precedence**:
 1. **UI-configured API Key** in SQLite `WorkspaceSettings` (`llm_api_keys`), configurable and verifiable via `SettingsModal.tsx`.
-2. **Environment variables** in `backend/.env` / `os.environ` (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, or `LLM_API_KEY` with fallback to `OPENAI_API_KEY`/`DEEPSEEK_API_KEY` for OpenAI-compatible endpoints).
+2. **Environment variables** in `backend/.env` (or, for desktop installs, `%LOCALAPPDATA%\SecondBrain\config\.env`) / `os.environ` (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, or `LLM_API_KEY` with fallback to `OPENAI_API_KEY`/`DEEPSEEK_API_KEY` for OpenAI-compatible endpoints).
 3. **None**: Proactive warning alerts appear on the Workspace Header, Settings Tab 3, and Chat Composer until a valid key is provided. Key verification can be tested live bounded by a 5-second ping via `POST /api/v1/settings/verify-key`. Clearing a UI key immediately restores fallback to `backend/.env`.
 
 **Environment variables read by the code**
@@ -80,6 +80,7 @@ Settings are loaded by [`src/config.py`](../backend/src/config.py) (`load_settin
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` | Provider credentials |
 | `LLM_API_KEY` | Credential for OpenAI-compatible endpoints (falls back to the OpenAI/DeepSeek key) |
 | `LLM_PROVIDER`, `LLM_MODEL_NAME`, `LLM_BASE_URL` | Override `llm.provider`, `llm.model_name`, `llm.base_url` |
+| `SECOND_BRAIN_DESKTOP_HOME`, `SECOND_BRAIN_APP_DIR` | Windows desktop mode: per-user data root (default `%LOCALAPPDATA%\SecondBrain`) and install root; set for the backend child by `SidecarSupervisor` so API routes and `.env` fallback resolve the same paths |
 | `CONFIG_PATH` | Alternate `config.yaml` location |
 | `QDRANT_URL` | Qdrant endpoint; `:memory:` runs an in-process instance |
 | `DATA_DIR`, `DB_DIR`, `FRONTEND_DIST_DIR` | Override `storage.*` paths |
@@ -190,6 +191,20 @@ cd backend
 - [`tests/test_engineering_chunker_entities.py`](../backend/tests/test_engineering_chunker_entities.py): Industrial tag-stem expansion (`LOOP-*`, voting channels, `_R\d+` suffixes), Docling-AST bypass, legend-anchored parent assembly, and Qdrant `record_type` persistence.
 - [`tests/test_engineering_crag_retrieval.py`](../backend/tests/test_engineering_crag_retrieval.py): Unfiltered semantic RRF, supplementary exact-tag pre-fetch, `fetch_document_legends()` (plus legacy `[]` fallback), FlashRank score-floor protection, and dynamic `top_n=12`.
 
+### Windows Desktop Testing
+
+To validate desktop hardware probing, sidecar process-tree termination, setup gating, tray/window lifecycle, and persisted SQLite LLM credentials:
+
+```bash
+cd backend
+.\.venv\Scripts\python.exe -m pytest --noconftest tests/test_desktop_supervisor.py tests/test_desktop_hardware_and_bootstrap.py tests/test_desktop_app_lifecycle.py tests/test_llm_credentials_persistence.py -v
+```
+
+- [`tests/test_desktop_supervisor.py`](../backend/tests/test_desktop_supervisor.py): Win32 hardware probe (`probe_system_hardware`, GPU/OneDrive detection, compute recommendation), sidecar env, lifecycle and ordered shutdown, process-tree termination guard, pipe-close deadlock guard, Job Object teardown.
+- [`tests/test_desktop_hardware_and_bootstrap.py`](../backend/tests/test_desktop_hardware_and_bootstrap.py): runtime C-extension verification, model readiness, compute switching, `/api/v1/system/{hardware,models}` desktop routes.
+- [`tests/test_desktop_app_lifecycle.py`](../backend/tests/test_desktop_app_lifecycle.py): window/tray lifecycle, setup UI invariants (offline, blocker gating), icon resolution, quit ordering.
+- [`tests/test_llm_credentials_persistence.py`](../backend/tests/test_llm_credentials_persistence.py): UI keys, `llm_compat_base_url`, and default provider surviving a simulated restart, `config/.env` fallback.
+
 ### Developer Gotchas & Debugging Lessons
 
 Key operational gotchas distilled from development and testing:
@@ -214,3 +229,4 @@ Key operational gotchas distilled from development and testing:
   3. PowerShell 5.1 does not support `&&` as a command separator; chain statements using `;` or PowerShell conditional logic.
   4. Quotes inside JSON strings passed directly on the CLI must be escaped (e.g. `"{\`"message\`":\`"...\`"}"`) or saved to a `.json` file.
 - **Chat SSE Streaming Route Contract**: The streaming conversational RAG route is mounted at `POST /api/v1/chat/completions` (accepting `ChatRequest`), streaming LangGraph reasoning steps, citations, and tokens over Server-Sent Events (SSE). Requesting `POST /api/v1/chat` returns `HTTP 405 Method Not Allowed`.
+- **Windows Sidecar Shutdown**: Never call `pipe.close()` on a child's captured `stdout` while the reader thread is alive, and terminate the process tree (not just the parent PID); see invariant 29 in [system-architecture.md](system-architecture.md). A silent `except Exception: pass` around startup deserialization once hid a missing `import json` that wiped saved API keys; log parse failures instead.

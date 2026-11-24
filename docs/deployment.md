@@ -260,7 +260,7 @@ For Windows users who want a standalone per-user desktop application without Doc
 | **Free Disk (CPU Mode)** | 8 GB | 15 GB+ | ~3.8 GB for offline AI models + app binaries + document/vector growth |
 | **Free Disk (NVIDIA CUDA 12.4 Mode)** | 12 GB | 20 GB+ | Adds ~2.5 GB for CUDA 12.4 PyTorch + `onnxruntime-gpu` wheels |
 | **NVIDIA GPU (Optional)** | NVIDIA GPU with >= 4.0 GB VRAM | >= 8 GB VRAM | Pre-selects CUDA 12.4 mode automatically when `nvidia-smi` reports >= 4096 MB VRAM |
-| **Windows Runtimes** | Edge WebView2 Runtime, VC++ 2015–2022 x64 Redistributable | Pre-installed on Windows 11 | Checked during install; official download links offered if missing |
+| **Windows Runtimes** | Edge WebView2 Runtime, VC++ 2015–2022 x64 Redistributable | Pre-installed on Windows 11 | Required: interactive installs keep **Next** disabled until both are detected (use **Download Missing Runtime(s)**, install, then **Re-check Config**); silent installs skip this gate |
 
 > [!WARNING]
 > **Avoid OneDrive-synced folders for `%LOCALAPPDATA%\SecondBrain` or custom `data_dir_override` paths.** OneDrive real-time sync conflicts with SQLite WAL (`-shm`/`-wal`) locks and Qdrant memory-mapped files.
@@ -268,6 +268,8 @@ For Windows users who want a standalone per-user desktop application without Doc
 ### Pre-install hardware probe & CPU vs. CUDA profile selection
 
 During installation, [`installer/second-brain.iss`](../installer/second-brain.iss) runs a native Win32 hardware probe (`GlobalMemoryStatusEx`, `GetDiskFreeSpaceExW`, CPU registry lookup, and `nvidia-smi.exe` when present) **before unpacking**:
+
+While the probe runs, **Next** stays disabled; it unlocks only when RAM and free disk meet the minimums, WebView2 and VC++ x64 are present, and the selected profile is eligible. The CUDA option is disabled (and CPU selected) when either no NVIDIA GPU with >= 4.0 GB VRAM is detected or free disk space is below 12.0 GB.
 
 - **Standard CPU Mode (`compute_profile: "cpu"`):** Uses bundled CPU PyTorch wheels (`{app}\venv`) and FastEmbed BM25 sparse vectors.
 - **NVIDIA GPU Accelerated Mode (`compute_profile: "cuda"`):** Pre-selected when an NVIDIA GPU with >= 4.0 GB VRAM and >= 12.0 GB free disk space are detected. On first launch (or when switching later via the System Tray), bundled `uv.exe` installs CUDA 12.4 PyTorch + `onnxruntime-gpu==1.20.0` into **`%LOCALAPPDATA%\SecondBrain\runtime\venv`**. Because CUDA wheels live outside `{app}`, future application upgrades preserve the ~2.5 GB CUDA runtime instead of wiping it.
@@ -284,7 +286,9 @@ To keep `SecondBrain-Setup-x64.exe` slim, **zero AI model weights are bundled in
 5. RapidOCR v3 ONNX (~20 MB) — CPU OCR for exploded-SHX CAD drawings (`models/rapidocr`)
 6. Docling v2 Layout & TableFormer (`docling-project/docling-models`, ~450 MB) — layout and table recovery (`models/docling/models`)
 
-Downloads are resumable (incomplete HuggingFace/FastEmbed blobs are retained across retries). Users with an existing offline cache can also click **Import Local Models Folder** (`pick_models_folder`) to copy weights without re-downloading.
+The setup screen keeps **Start Setup** (initially labeled `"Checking Configuration..."`) and **Use Existing Local Models Folder...** disabled until the hardware scan finishes, and keeps **Start Setup** disabled while hardware blockers or unmet CUDA requirements remain.
+
+Downloads are resumable (incomplete HuggingFace/FastEmbed blobs are retained across retries). Users with an existing offline cache can also click **Use Existing Local Models Folder...** (`pick_models_folder`) to copy weights without re-downloading.
 
 ### System Tray & single-instance lifecycle
 
@@ -294,8 +298,17 @@ Downloads are resumable (incomplete HuggingFace/FastEmbed blobs are retained acr
   - **Hardware & Compute Mode (CPU / CUDA)...** — opens `setup_ui.html?mode=switch`, gracefully stopping `uvicorn` before modifying Python runtime wheels to prevent Windows `WinError 32` file locks.
   - **Reclaim Memory / VRAM Now** — calls `POST /api/v1/system/memory/reclaim` and surfaces RSS/VRAM results in a tray notification.
   - **Open Data Folder** / **Open Logs Folder** — opens the active data directory or `%LOCALAPPDATA%\SecondBrain\logs` (`launcher.log`, `qdrant.log`, `backend.log`).
-  - **Quit Second Brain** — performs ordered shutdown (`uvicorn` → `qdrant.exe` → Win32 Job Object close → tray/mutex release).
+  - **Quit Second Brain** — performs ordered shutdown (`uvicorn` process tree → `qdrant.exe` → Win32 Job Object close → tray/mutex release).
 - **CLI shutdown:** Running `"{app}\venv\Scripts\pythonw.exe" "{app}\app\installer\launcher_entry.py" --quit` signals a running desktop instance to shut down cleanly and waits up to 10 seconds for mutex release.
+
+### Windows icon identity
+
+The launcher, the running process, and both shortcuts share the `SecondBrain.Desktop.App` AppUserModelID so the taskbar groups the window under the Second Brain icon rather than `pythonw.exe`. The window icon is passed to WebView2 from `installer/second-brain.ico`; the tray loads the same file.
+
+### Desktop troubleshooting
+
+- **API keys and default provider:** the desktop app has no `backend/.env`. Keys saved in **Settings** live in SQLite (`WorkspaceSettings` under `%LOCALAPPDATA%\SecondBrain\data\db`) and are restored at every start. An optional `%LOCALAPPDATA%\SecondBrain\config\.env` is read as a fallback when no UI key exists for a provider.
+- **Leftover `python.exe` / `qdrant.exe` after Quit:** check `%LOCALAPPDATA%\SecondBrain\logs\launcher.log`; shutdown is expected to finish in seconds. If processes survive a crash, the Win32 Job Object terminates them when the launcher exits.
 
 ### Clean uninstall lifecycle
 
@@ -314,7 +327,7 @@ Downloads are resumable (incomplete HuggingFace/FastEmbed blobs are retained acr
    ```
 2. Copy `data\db\second_brain.db` and `data\db\chat_history.db` into `%LOCALAPPDATA%\SecondBrain\data\db\`, and copy `data\raw\`, `data\parsed\`, and `data\markdown\` into `%LOCALAPPDATA%\SecondBrain\data\` (keeping Second Brain Desktop closed via **Quit Second Brain**).
 3. To restore Qdrant vectors without re-parsing raw documents, either restore a Qdrant collection snapshot into the Desktop Qdrant instance on first start or re-index existing parsed checkpoints/raw files into Desktop Qdrant using the staged environment (`python.exe -m src.ingestion.cli %LOCALAPPDATA%\SecondBrain\data\raw --force`).
-4. Optionally copy your existing `data\models\` folder and use **Import Local Models Folder** on first launch to avoid re-downloading the 3.8 GB model cache.
+4. Optionally copy your existing `data\models\` folder and use **Use Existing Local Models Folder...** on first launch to avoid re-downloading the 3.8 GB model cache.
 
 ### Building the Windows installer from source
 
