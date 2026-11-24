@@ -22,7 +22,11 @@ import {
 } from "lucide-react";
 import { useChatStream, useChatThreads } from "../../hooks/useChatStream";
 import { useSystemStats } from "../../hooks/useDocuments";
-import { useDomainsQuery, useWorkspaceSettingsQuery } from "../../hooks/useDomains";
+import {
+  useDomainsQuery,
+  useUpdateWorkspaceSettingsMutation,
+  useWorkspaceSettingsQuery,
+} from "../../hooks/useDomains";
 import { resolveDomainMeta } from "../../lib/domainTheme";
 import type {
   ChatMessage,
@@ -765,6 +769,7 @@ export const ChatAssistant: React.FC = () => {
   const { data: threadsData } = useChatThreads();
   const { data: stats } = useSystemStats();
   const { data: wsSettings } = useWorkspaceSettingsQuery();
+  const updateWorkspaceSettingsMutation = useUpdateWorkspaceSettingsMutation();
 
   const {
     messages,
@@ -782,9 +787,17 @@ export const ChatAssistant: React.FC = () => {
   });
 
   const threads = threadsData?.threads ?? threadsData?.items ?? [];
-  const providers = wsSettings?.available_providers?.length
-    ? wsSettings.available_providers
-    : (stats?.available_providers ?? stats?.configured_providers ?? []);
+  const providers = useMemo(
+    () =>
+      wsSettings?.available_providers?.length
+        ? wsSettings.available_providers
+        : (stats?.available_providers ?? stats?.configured_providers ?? []),
+    [
+      wsSettings?.available_providers,
+      stats?.available_providers,
+      stats?.configured_providers,
+    ]
+  );
 
   const activeProv =
     selectedProvider ||
@@ -800,30 +813,94 @@ export const ChatAssistant: React.FC = () => {
   );
   const hasKeyIssue = isMissingKey || isInvalidKey;
 
+  const defaultBadgeProvider =
+    wsSettings?.default_llm_provider ||
+    selectedProvider ||
+    stats?.llm?.provider ||
+    "openai";
+  const defaultBadgeOption = providers.find(
+    (p) => p.provider === defaultBadgeProvider
+  );
+  const defaultBadgeModel =
+    wsSettings?.default_llm_model ||
+    defaultBadgeOption?.default_model ||
+    selectedModel ||
+    stats?.llm?.model_name ||
+    "gpt-4o-mini";
+
   const hasInitializedModelRef = useRef(false);
+  const selectedProviderRef = useRef(selectedProvider);
+  selectedProviderRef.current = selectedProvider;
+  const selectedModelRef = useRef(selectedModel);
+  selectedModelRef.current = selectedModel;
+  const lastSubmittedOverrideRef = useRef<string | null>(null);
 
   // Sync default provider/model from workspace settings or system stats
   useEffect(() => {
     if (wsSettings) {
-      const nextProv =
-        wsSettings.default_llm_provider || stats?.llm?.provider || "";
-      const nextMod =
-        wsSettings.default_llm_model || stats?.llm?.model_name || "";
-      if (nextProv) {
-        setSelectedProvider(nextProv);
+      lastSubmittedOverrideRef.current = null;
+      if (wsSettings.default_llm_provider) {
+        const matchedOption = providers.find(
+          (p) => p.provider === wsSettings.default_llm_provider
+        );
+        setSelectedProvider(wsSettings.default_llm_provider);
+        setSelectedModel(
+          wsSettings.default_llm_model ||
+            matchedOption?.default_model ||
+            stats?.llm?.model_name ||
+            ""
+        );
+        hasInitializedModelRef.current = true;
+        return;
       }
-      if (nextMod) {
-        setSelectedModel(nextMod);
+
+      const currentProvider = selectedProviderRef.current;
+      const currentOption = currentProvider
+        ? providers.find((p) => p.provider === currentProvider)
+        : undefined;
+
+      if (currentProvider && currentOption?.configured) {
+        if (!selectedModelRef.current && currentOption.default_model) {
+          setSelectedModel(currentOption.default_model);
+        }
+        hasInitializedModelRef.current = true;
+        return;
+      }
+
+      const configuredProviders = providers.filter((p) => p.configured);
+      const preferredConfigured =
+        configuredProviders.find((p) => p.provider === stats?.llm?.provider) ||
+        configuredProviders[0];
+
+      if (preferredConfigured) {
+        setSelectedProvider(preferredConfigured.provider);
+        setSelectedModel(
+          preferredConfigured.default_model ||
+            (preferredConfigured.provider === stats?.llm?.provider
+              ? stats?.llm?.model_name
+              : "") ||
+            ""
+        );
+      } else if (!currentProvider && stats?.llm?.provider) {
+        setSelectedProvider(stats.llm.provider);
+        if (!selectedModelRef.current && stats.llm.model_name) {
+          setSelectedModel(stats.llm.model_name);
+        }
       }
       hasInitializedModelRef.current = true;
       return;
     }
 
     if (!hasInitializedModelRef.current && stats?.llm) {
-      if (!selectedProvider && stats.llm.provider) {
+      if (!selectedProviderRef.current && stats.llm.provider) {
         setSelectedProvider(stats.llm.provider);
       }
-      if (!selectedModel && stats.llm.model_name) {
+      if (
+        !selectedModelRef.current &&
+        stats.llm.model_name &&
+        (!selectedProviderRef.current ||
+          selectedProviderRef.current === stats.llm.provider)
+      ) {
         setSelectedModel(stats.llm.model_name);
       }
       if (stats.llm.provider || stats.llm.model_name) {
@@ -831,13 +908,46 @@ export const ChatAssistant: React.FC = () => {
       }
     }
   }, [
-    wsSettings?.default_llm_provider,
-    wsSettings?.default_llm_model,
+    wsSettings,
+    providers,
     stats?.llm?.provider,
     stats?.llm?.model_name,
     setSelectedProvider,
     setSelectedModel,
   ]);
+
+  const commitModelOverride = (rawValue: string) => {
+    const trimmedModel = rawValue.trim();
+    const effectiveProvider =
+      selectedProvider ||
+      wsSettings?.default_llm_provider ||
+      stats?.llm?.provider ||
+      "";
+    if (!effectiveProvider) return;
+    if (trimmedModel !== selectedModel) {
+      setSelectedModel(trimmedModel);
+    }
+    const commitKey = `${effectiveProvider}::${trimmedModel}`;
+    if (
+      lastSubmittedOverrideRef.current === commitKey ||
+      (effectiveProvider === (wsSettings?.default_llm_provider || "") &&
+        trimmedModel === (wsSettings?.default_llm_model || ""))
+    ) {
+      return;
+    }
+    lastSubmittedOverrideRef.current = commitKey;
+    updateWorkspaceSettingsMutation.mutate(
+      {
+        default_llm_provider: effectiveProvider,
+        default_llm_model: trimmedModel || null,
+      },
+      {
+        onError: () => {
+          lastSubmittedOverrideRef.current = null;
+        },
+      }
+    );
+  };
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -965,8 +1075,7 @@ export const ChatAssistant: React.FC = () => {
             <div className="flex items-center justify-between text-[11px] text-slate-400">
               <span>Per-Request LLM Override</span>
               <span className="text-[10px] text-slate-500">
-                Default: {stats?.llm?.provider || "openai"} /{" "}
-                {stats?.llm?.model_name || "gpt-4o-mini"}
+                Default: {defaultBadgeProvider} / {defaultBadgeModel}
               </span>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -983,14 +1092,33 @@ export const ChatAssistant: React.FC = () => {
                     const matched = providers.find(
                       (p) => p.provider === nextProv
                     );
+                    let nextModel = "";
                     if (matched?.default_model) {
-                      setSelectedModel(matched.default_model);
-                    } else {
-                      if (nextProv === "deepseek") setSelectedModel("deepseek-v4-pro");
-                      else if (nextProv === "anthropic") setSelectedModel("claude-sonnet-5-5");
-                      else if (nextProv === "openai") setSelectedModel("gpt-4o");
-                      else if (nextProv === "openai_compatible") setSelectedModel("glm-4-plus");
+                      nextModel = matched.default_model;
+                    } else if (nextProv === "deepseek") {
+                      nextModel = "deepseek-v4-pro";
+                    } else if (nextProv === "anthropic") {
+                      nextModel = "claude-sonnet-5-5";
+                    } else if (nextProv === "openai") {
+                      nextModel = "gpt-4o";
+                    } else if (nextProv === "openai_compatible") {
+                      nextModel = "glm-4-plus";
                     }
+                    if (nextModel) {
+                      setSelectedModel(nextModel);
+                    }
+                    lastSubmittedOverrideRef.current = `${nextProv}::${nextModel}`;
+                    updateWorkspaceSettingsMutation.mutate(
+                      {
+                        default_llm_provider: nextProv || null,
+                        default_llm_model: nextModel || null,
+                      },
+                      {
+                        onError: () => {
+                          lastSubmittedOverrideRef.current = null;
+                        },
+                      }
+                    );
                   }}
                   className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none"
                 >
@@ -1021,6 +1149,14 @@ export const ChatAssistant: React.FC = () => {
                   aria-label="LLM Model Name"
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
+                  onBlur={(e) => commitModelOverride(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commitModelOverride(e.currentTarget.value);
+                      e.currentTarget.blur();
+                    }
+                  }}
                   placeholder={stats?.llm?.model_name || "e.g. gpt-4o-mini"}
                   className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 placeholder:text-slate-600 focus:border-indigo-500 focus:outline-none"
                 />

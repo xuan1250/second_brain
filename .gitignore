@@ -14,6 +14,10 @@ frontend/.gitkeep
 .pytest_cache/
 *.pyc
 
+# Windows desktop staging and installer output
+build/
+dist/
+
 # Internal development & AI agent process files (kept locally, excluded from public repo)
 .agentkit/
 .agents/

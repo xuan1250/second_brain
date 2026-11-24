@@ -262,20 +262,22 @@ def sanitize_llm_error(
     return msg, is_auth_error
 
 
-def _load_dotenv_if_present(dotenv_path: Path | None = None) -> None:
-    """Load/refresh valid keys from backend/.env and strip template placeholders from os.environ."""
-    # First strip any placeholder values injected by docker-compose env_file
-    for env_key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "LLM_API_KEY"):
-        curr = os.environ.get(env_key)
-        if curr is not None and not is_valid_api_key(curr):
-            os.environ.pop(env_key, None)
+_MANAGED_API_ENV_KEYS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "LLM_API_KEY")
 
-    if dotenv_path is None and "PYTEST_CURRENT_TEST" in os.environ:
-        return
 
-    path = dotenv_path or (BACKEND_DIR / ".env")
+def _load_dotenv_file(
+    path: Path,
+    *,
+    loaded_api_keys: set[str] | None = None,
+    invalid_api_keys: set[str] | None = None,
+) -> None:
+    """Parse a single .env file and merge valid keys into os.environ."""
     if not path.is_file():
         return
+    standalone = loaded_api_keys is None and invalid_api_keys is None
+    loaded = loaded_api_keys if loaded_api_keys is not None else set()
+    invalid = invalid_api_keys if invalid_api_keys is not None else set()
+
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -285,18 +287,56 @@ def _load_dotenv_if_present(dotenv_path: Path | None = None) -> None:
         value = value.strip().strip("'").strip('"')
         if not key:
             continue
-        if key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "LLM_API_KEY"):
+        if key in _MANAGED_API_ENV_KEYS:
+            if key in loaded:
+                continue
             if is_valid_api_key(value):
                 # Allow live-reloading from .env if not set or previously loaded from .env
                 if key not in os.environ or key in _dotenv_managed_keys or not is_valid_api_key(os.environ.get(key)):
                     os.environ[key] = value
                     _dotenv_managed_keys.add(key)
-            elif key in _dotenv_managed_keys:
-                os.environ.pop(key, None)
-                _dotenv_managed_keys.discard(key)
+                loaded.add(key)
+            else:
+                invalid.add(key)
         elif key not in os.environ and value:
             os.environ[key] = value
             _dotenv_managed_keys.add(key)
+
+    if standalone:
+        for key in invalid - loaded:
+            if key in _dotenv_managed_keys:
+                os.environ.pop(key, None)
+                _dotenv_managed_keys.discard(key)
+
+
+def _load_dotenv_if_present(dotenv_path: Path | None = None) -> None:
+    """Load/refresh valid keys from .env files and strip template placeholders from os.environ."""
+    # First strip any placeholder values injected by docker-compose env_file
+    for env_key in _MANAGED_API_ENV_KEYS:
+        curr = os.environ.get(env_key)
+        if curr is not None and not is_valid_api_key(curr):
+            os.environ.pop(env_key, None)
+
+    if dotenv_path is None and "PYTEST_CURRENT_TEST" in os.environ:
+        return
+
+    if dotenv_path is not None:
+        candidates = [dotenv_path]
+    else:
+        candidates = [BACKEND_DIR / ".env"]
+        desktop_home = (os.environ.get("SECOND_BRAIN_DESKTOP_HOME") or "").strip()
+        if desktop_home:
+            candidates.append(Path(desktop_home).expanduser() / "config" / ".env")
+
+    loaded_api_keys: set[str] = set()
+    invalid_api_keys: set[str] = set()
+    for path in candidates:
+        _load_dotenv_file(path, loaded_api_keys=loaded_api_keys, invalid_api_keys=invalid_api_keys)
+
+    for key in invalid_api_keys - loaded_api_keys:
+        if key in _dotenv_managed_keys:
+            os.environ.pop(key, None)
+            _dotenv_managed_keys.discard(key)
 
 
 def set_chat_model(model: BaseChatModel | Callable[..., BaseChatModel] | None) -> None:
