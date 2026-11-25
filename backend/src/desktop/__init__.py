@@ -10,6 +10,7 @@ from src.desktop.bootstrap import (
     ModelSpec,
     RuntimeBootstrapService,
     RuntimeCheckResult,
+    apply_sparse_mode_policy,
     detect_collection_sparse_mode,
 )
 from src.desktop.config import (
@@ -58,6 +59,7 @@ __all__ = [
     "SingleInstanceMutex",
     "SystemTrayController",
     "WindowsJobObject",
+    "apply_sparse_mode_policy",
     "build_tray_icon_image",
     "detect_collection_sparse_mode",
     "find_free_loopback_port",

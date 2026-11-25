@@ -7,6 +7,8 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
+from src.rag.qdrant_filters import normalize_page_numbers
+
 
 class Citation(TypedDict, total=False):
     """Structured citation metadata linking an inline [N] marker to a document chunk.
@@ -74,8 +76,7 @@ def format_citation_source(citation: Citation | dict[str, Any]) -> str:
     Omits `p.X` when `page_numbers` is empty (e.g. DOCX or XLSX documents).
     """
     source = str(citation.get("source_filename") or "document").strip()
-    pages_raw = citation.get("page_numbers") or []
-    pages = sorted({int(p) for p in pages_raw if isinstance(p, (int, str)) and str(p).isdigit()})
+    pages = normalize_page_numbers(citation.get("page_numbers"))
     heading = str(citation.get("heading_path") or "").strip()
 
     parts: list[str] = [f"Source: {source}"]

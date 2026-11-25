@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from src.desktop.config import DesktopConfig, DesktopPaths, load_desktop_config
+from src.desktop.win32_window import resolve_app_icon_path
 
 logger = logging.getLogger(__name__)
 
 
-def build_tray_icon_image(size: int = 64) -> Any | None:
+def build_tray_icon_image(size: int = 64, paths: DesktopPaths | None = None) -> Any | None:
     """Load the brand `.ico` emblem if present, or render the Pillow fallback icon."""
     try:
         from PIL import Image, ImageDraw
@@ -25,8 +26,8 @@ def build_tray_icon_image(size: int = 64) -> Any | None:
 
     target_size = max(16, int(size))
     resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
-    ico_path = Path(__file__).resolve().parents[3] / "installer" / "second-brain.ico"
-    if ico_path.is_file():
+    ico_path = resolve_app_icon_path(paths)
+    if ico_path is not None and ico_path.is_file():
         try:
             with Image.open(ico_path) as ico_img:
                 rgba = ico_img.convert("RGBA")
@@ -225,7 +226,11 @@ class SystemTrayController:
         if pystray_mod is None:
             return False
 
-        image = self._icon_image if self._icon_image is not None else build_tray_icon_image(64)
+        image = (
+            self._icon_image
+            if self._icon_image is not None
+            else build_tray_icon_image(64, paths=self.paths)
+        )
         if image is None:
             logger.warning("Tray icon image could not be created; skipping system tray.")
             return False

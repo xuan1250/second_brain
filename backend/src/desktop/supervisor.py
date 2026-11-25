@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 import urllib.error
 import urllib.request
 from logging.handlers import RotatingFileHandler
@@ -19,12 +18,22 @@ from src.desktop.config import (
     find_free_loopback_port,
     load_desktop_config,
 )
+from src.desktop.env import CREATE_NO_WINDOW, build_model_cache_env
 from src.desktop.job_object import WindowsJobObject
+from src.desktop.logging_utils import acquire_log_handler, release_log_handler
+from src.desktop.supervisor_process import (
+    spawn_pipe_reader,
+    spawn_sidecar,
+    terminate_process,
+    wait_for_http_ready,
+)
 
-_CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
-_LOG_MAX_BYTES = 5 * 1024 * 1024
-_LOG_BACKUP_COUNT = 3
 _REAL_POPEN_TYPE = subprocess.Popen
+_LOG_CHANNELS: tuple[tuple[str, str], ...] = (
+    ("launcher", "launcher.log"),
+    ("qdrant", "qdrant.log"),
+    ("backend", "backend.log"),
+)
 
 
 def _kill_process_tree_win32(pid: int) -> None:
@@ -37,7 +46,7 @@ def _kill_process_tree_win32(pid: int) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5.0,
-            creationflags=_CREATE_NO_WINDOW,
+            creationflags=CREATE_NO_WINDOW,
         )
     except Exception:
         pass
@@ -81,6 +90,7 @@ class SidecarSupervisor:
         self._backend_log_thread: threading.Thread | None = None
         self._loggers: dict[str, logging.Logger] = {}
         self._log_handlers: dict[str, RotatingFileHandler] = {}
+        self._log_paths: dict[str, Path] = {}
         self._lock = threading.RLock()
 
     @property
@@ -109,29 +119,14 @@ class SidecarSupervisor:
         return self._job_object
 
     def _ensure_loggers(self) -> None:
-        """Initialize rotating log files (`qdrant.log`, `backend.log`, `launcher.log`)."""
+        """Initialize refcounted rotating log files (`qdrant.log`, `backend.log`, `launcher.log`)."""
         if self._log_handlers:
             return
 
         self.paths.logs_dir.mkdir(parents=True, exist_ok=True)
-        formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-
-        for channel, filename in (
-            ("launcher", "launcher.log"),
-            ("qdrant", "qdrant.log"),
-            ("backend", "backend.log"),
-        ):
+        for channel, filename in _LOG_CHANNELS:
             log_path = self.paths.logs_dir / filename
-            handler = RotatingFileHandler(
-                log_path,
-                maxBytes=_LOG_MAX_BYTES,
-                backupCount=_LOG_BACKUP_COUNT,
-                encoding="utf-8",
-            )
-            handler.setFormatter(formatter)
+            handler = acquire_log_handler(log_path)
 
             inst_logger = logging.getLogger(f"second_brain.desktop.{id(self)}.{channel}")
             inst_logger.setLevel(logging.INFO)
@@ -140,20 +135,23 @@ class SidecarSupervisor:
             inst_logger.addHandler(handler)
 
             self._log_handlers[channel] = handler
+            self._log_paths[channel] = log_path
             self._loggers[channel] = inst_logger
 
     def _close_loggers(self) -> None:
-        """Flush and close rotating file handlers so log files are unlocked."""
+        """Detach and release refcounted log handlers so closed files are unlocked."""
         for channel, inst_logger in list(self._loggers.items()):
             handler = self._log_handlers.get(channel)
             if handler is not None:
                 try:
                     inst_logger.removeHandler(handler)
-                    handler.flush()
-                    handler.close()
                 except Exception:
                     pass
+            log_path = self._log_paths.pop(channel, None)
+            if log_path is not None:
+                release_log_handler(log_path)
         self._log_handlers.clear()
+        self._log_paths.clear()
         self._loggers.clear()
 
     def _log_launcher(self, level: int, message: str, *args: Any) -> None:
@@ -167,33 +165,7 @@ class SidecarSupervisor:
         channel: str,
     ) -> threading.Thread | None:
         """Stream child stdout/stderr lines into a rotating file logger in a daemon thread."""
-        pipe = getattr(proc, "stdout", None)
-        if pipe is None:
-            return None
-
-        target_logger = self._loggers.get(channel)
-
-        def _reader() -> None:
-            try:
-                for raw_line in pipe:
-                    line = str(raw_line).rstrip("\r\n")
-                    if line and target_logger is not None:
-                        target_logger.info("%s", line)
-            except Exception:
-                pass
-            finally:
-                try:
-                    pipe.close()
-                except Exception:
-                    pass
-
-        thread = threading.Thread(
-            target=_reader,
-            name=f"desktop-log-{channel}",
-            daemon=True,
-        )
-        thread.start()
-        return thread
+        return spawn_pipe_reader(proc, channel, self._loggers.get(channel))
 
     def build_qdrant_env(self) -> dict[str, str]:
         """Construct environment variables for the loopback Qdrant sidecar."""
@@ -225,6 +197,7 @@ class SidecarSupervisor:
             else ("auto" if is_cuda else "bm25")
         )
 
+        cache_env = build_model_cache_env(models_dir, for_download=False)
         env = os.environ.copy()
         env.update(
             {
@@ -238,13 +211,7 @@ class SidecarSupervisor:
                 "CORS_ORIGINS": (
                     f"http://127.0.0.1:{self.api_port},http://localhost:{self.api_port}"
                 ),
-                "HF_HOME": str(models_dir / "huggingface"),
-                "HF_HUB_CACHE": str(models_dir / "huggingface" / "hub"),
-                "TORCH_HOME": str(models_dir / "torch"),
-                "FASTEMBED_CACHE_PATH": str(models_dir / "fastembed"),
-                "RAPIDOCR_MODEL_DIR": str(models_dir / "rapidocr"),
-                "DOCLING_CACHE_DIR": str(models_dir / "docling"),
-                "FLASHRANK_ALLOW_DOWNLOAD": "true",
+                **cache_env,
                 "EMBEDDING_DEVICE": device,
                 "INGESTION_DEVICE": device,
                 "EMBEDDING_FP16": fp16,
@@ -253,13 +220,8 @@ class SidecarSupervisor:
                 "PYTHONPATH": str(self.paths.backend_dir),
             }
         )
-
-        docling_artifacts = models_dir / "docling" / "models"
-        if docling_artifacts.is_dir() and any(docling_artifacts.iterdir()):
-            env["DOCLING_ARTIFACTS_PATH"] = str(docling_artifacts)
-        else:
+        if "DOCLING_ARTIFACTS_PATH" not in cache_env:
             env.pop("DOCLING_ARTIFACTS_PATH", None)
-
         return env
 
     def _wait_for_http_ready(
@@ -269,32 +231,12 @@ class SidecarSupervisor:
         service_name: str,
     ) -> None:
         """Poll `url` until HTTP 200 or fail early if child exits or timeout expires."""
-        deadline = time.monotonic() + self.startup_timeout_sec
-        last_error: str = "no response yet"
-
-        while time.monotonic() < deadline:
-            exit_code = proc.poll()
-            if exit_code is not None:
-                raise RuntimeError(
-                    f"{service_name} exited prematurely with exit code {exit_code}"
-                )
-
-            try:
-                with urllib.request.urlopen(url, timeout=1.5) as resp:
-                    status = getattr(resp, "status", None)
-                    if status is None:
-                        status = resp.getcode()
-                    if status == 200:
-                        return
-                    last_error = f"HTTP {status}"
-            except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
-                last_error = str(exc)
-
-            time.sleep(self.poll_interval_sec)
-
-        raise TimeoutError(
-            f"{service_name} did not become ready at {url} within {self.startup_timeout_sec:.1f}s "
-            f"(last error: {last_error})"
+        wait_for_http_ready(
+            url,
+            proc,
+            service_name,
+            startup_timeout_sec=self.startup_timeout_sec,
+            poll_interval_sec=self.poll_interval_sec,
         )
 
     def _terminate_process(
@@ -305,51 +247,37 @@ class SidecarSupervisor:
         reader_thread: threading.Thread | None = None,
     ) -> None:
         """Gracefully terminate a child process tree with timeout and hard-kill fallback."""
-        if proc is None:
-            return
+        terminate_process(
+            proc,
+            service_name,
+            timeout_sec,
+            reader_thread=reader_thread,
+            log_fn=self._log_launcher,
+        )
 
-        if proc.poll() is None:
-            self._log_launcher(logging.INFO, "Stopping %s (pid=%s)...", service_name, getattr(proc, "pid", "?"))
-            if (
-                sys.platform == "win32"
-                and isinstance(proc, _REAL_POPEN_TYPE)
-                and isinstance(proc.pid, int)
-                and not isinstance(proc.pid, bool)
-                and proc.pid > 0
-            ):
-                _kill_process_tree_win32(proc.pid)
-
-            if proc.poll() is None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=timeout_sec)
-                except subprocess.TimeoutExpired:
-                    self._log_launcher(
-                        logging.WARNING,
-                        "%s did not exit within %.1fs; forcing kill.",
-                        service_name,
-                        timeout_sec,
-                    )
-                    try:
-                        proc.kill()
-                        proc.wait(timeout=2.0)
-                    except (subprocess.TimeoutExpired, OSError):
-                        pass
-                except OSError:
-                    pass
-
-        if reader_thread is not None and reader_thread.is_alive():
-            reader_thread.join(timeout=1.5)
-
-        # Only close stdout when the reader thread has exited; closing while blocked
-        # in `for raw_line in pipe:` deadlocks on CPython's internal pipe lock.
-        if reader_thread is None or not reader_thread.is_alive():
-            pipe = getattr(proc, "stdout", None)
-            if pipe is not None:
-                try:
-                    pipe.close()
-                except Exception:
-                    pass
+    def _spawn_sidecar(
+        self,
+        *,
+        cmd: list[str],
+        cwd: Path,
+        env: dict[str, str],
+        channel: str,
+        service_name: str,
+        health_url: str,
+    ) -> tuple[subprocess.Popen[str], threading.Thread | None]:
+        return spawn_sidecar(
+            cmd=cmd,
+            cwd=cwd,
+            env=env,
+            channel=channel,
+            service_name=service_name,
+            health_url=health_url,
+            job_object=self._ensure_job_object(),
+            target_logger=self._loggers.get(channel),
+            startup_timeout_sec=self.startup_timeout_sec,
+            poll_interval_sec=self.poll_interval_sec,
+            terminate_fn=self._terminate_process,
+        )
 
     def start_qdrant(self) -> subprocess.Popen[str]:
         """Launch `qdrant.exe` on `127.0.0.1:<qdrant_port>` and await `/readyz`."""
@@ -359,41 +287,20 @@ class SidecarSupervisor:
 
             self.paths.ensure_directories(self.config)
             self._ensure_loggers()
-            job = self._ensure_job_object()
 
             data_root = self.paths.resolve_data_dir(self.config)
             cmd = [str(self.paths.qdrant_exe)]
-            self._log_launcher(
-                logging.INFO,
-                "Starting Qdrant sidecar on %s (%s)",
-                self.qdrant_url,
-                cmd[0],
-            )
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(data_root),
+            self._log_launcher(logging.INFO, "Starting Qdrant sidecar on %s (%s)", self.qdrant_url, cmd[0])
+            proc, reader = self._spawn_sidecar(
+                cmd=cmd,
+                cwd=data_root,
                 env=self.build_qdrant_env(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                creationflags=_CREATE_NO_WINDOW,
+                channel="qdrant",
+                service_name="Qdrant",
+                health_url=f"{self.qdrant_url}/readyz",
             )
-            job.assign_process(proc)
-            reader = self._spawn_pipe_reader(proc, "qdrant")
             self._qdrant_proc = proc
             self._qdrant_log_thread = reader
-
-            try:
-                self._wait_for_http_ready(f"{self.qdrant_url}/readyz", proc, "Qdrant")
-            except Exception:
-                self._terminate_process(proc, "Qdrant", timeout_sec=5.0, reader_thread=reader)
-                self._qdrant_proc = None
-                self._qdrant_log_thread = None
-                raise
-
             self._log_launcher(logging.INFO, "Qdrant sidecar is ready at %s.", self.qdrant_url)
             return proc
 
@@ -405,7 +312,6 @@ class SidecarSupervisor:
 
             self.paths.ensure_directories(self.config)
             self._ensure_loggers()
-            job = self._ensure_job_object()
 
             python_exe = self.paths.resolve_backend_python(
                 self.config.compute_profile,
@@ -428,35 +334,16 @@ class SidecarSupervisor:
                 python_exe,
                 self.config.compute_profile,
             )
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(self.paths.backend_dir),
+            proc, reader = self._spawn_sidecar(
+                cmd=cmd,
+                cwd=self.paths.backend_dir,
                 env=self.build_backend_env(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                creationflags=_CREATE_NO_WINDOW,
+                channel="backend",
+                service_name="FastAPI backend",
+                health_url=f"{self.api_url}/api/v1/system/health",
             )
-            job.assign_process(proc)
-            reader = self._spawn_pipe_reader(proc, "backend")
             self._backend_proc = proc
             self._backend_log_thread = reader
-
-            try:
-                self._wait_for_http_ready(
-                    f"{self.api_url}/api/v1/system/health",
-                    proc,
-                    "FastAPI backend",
-                )
-            except Exception:
-                self._terminate_process(proc, "FastAPI backend", timeout_sec=5.0, reader_thread=reader)
-                self._backend_proc = None
-                self._backend_log_thread = None
-                raise
-
             self._log_launcher(logging.INFO, "FastAPI backend is ready at %s.", self.api_url)
             return proc
 

@@ -8,13 +8,10 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-
-logger = logging.getLogger("uvicorn.error")
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from qdrant_client import AsyncQdrantClient
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.api.dependencies import (
@@ -38,11 +35,16 @@ from src.api.schemas import (
     ThreadSummary,
 )
 from src.config import Settings
-from src.db.models import ChatThread
+from src.db.repository import (
+    get_chat_thread_row,
+    list_chat_threads as list_chat_thread_rows,
+)
 from src.ingestion.indexer import BaseEmbedder, SparseEncoder
 from src.rag.graph import delete_thread_state, get_thread_state, stream_chat_response
-from src.rag.llm import record_key_validation, sanitize_llm_error
 from src.rag.reranker import FlashRankReranker
+from src.rag.streaming import format_sse_error_event
+
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -157,20 +159,13 @@ async def chat_completions(
                 data_obj = item.get("data") if isinstance(item.get("data"), dict) else {"value": item.get("data")}
                 yield format_sse_frame(event_type, data_obj)
         except Exception as exc:
-            clean_err, is_auth = sanitize_llm_error(exc, provider=payload.provider)
-            if is_auth and payload.provider:
-                try:
-                    record_key_validation(payload.provider, status="invalid", error=clean_err, settings=settings)
-                except Exception:
-                    pass
-            yield format_sse_frame(
-                "error",
-                {
-                    "thread_id": active_thread_id,
-                    "message": clean_err,
-                    "error": clean_err,
-                },
+            err_event = format_sse_error_event(
+                exc,
+                thread_id=active_thread_id,
+                provider=payload.provider,
+                settings=settings,
             )
+            yield format_sse_frame(err_event["event"], err_event["data"])
 
     headers = {
         "Cache-Control": "no-cache",
@@ -191,12 +186,7 @@ async def list_chat_threads(
     session: AsyncSession = Depends(get_db_session),
 ) -> ThreadListResponse:
     """List saved conversation threads from `chat_threads`, ordered newest first with pagination."""
-    total = int((await session.execute(select(func.count()).select_from(ChatThread))).scalar() or 0)
-    rows = (
-        await session.execute(
-            select(ChatThread).order_by(ChatThread.updated_at.desc()).offset(offset).limit(limit)
-        )
-    ).scalars().all()
+    rows, total = await list_chat_thread_rows(session, limit=limit, offset=offset)
     summaries = [ThreadSummary.model_validate(row) for row in rows]
     return ThreadListResponse(
         threads=summaries,
@@ -214,7 +204,7 @@ async def get_chat_thread(
     checkpointer: BaseCheckpointSaver = Depends(get_active_checkpointer),
 ) -> ThreadDetailResponse:
     """Return full message and citation history for a conversation thread."""
-    row = await session.get(ChatThread, thread_id)
+    row = await get_chat_thread_row(session, thread_id)
     state = await get_thread_state(thread_id=thread_id, checkpointer=checkpointer)
     raw_messages: list[BaseMessage] = list(state.get("messages") or [])
     raw_citations: list[dict[str, Any]] = list(state.get("citations") or [])
@@ -257,7 +247,7 @@ async def delete_chat_thread(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_db_session_factory),
 ) -> ThreadDeleteResponse:
     """Clear thread checkpoint state from `chat_history.db` and delete the `chat_threads` row."""
-    row = await session.get(ChatThread, thread_id)
+    row = await get_chat_thread_row(session, thread_id)
     state = await get_thread_state(thread_id=thread_id, checkpointer=checkpointer)
     has_messages = bool(state.get("messages"))
 
@@ -278,4 +268,3 @@ async def delete_chat_thread(
         deleted=True,
         status="deleted",
     )
-
