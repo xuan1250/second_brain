@@ -4,11 +4,12 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
-  Loader2,
   Sparkles,
 } from "lucide-react";
 import { getDocumentRawUrl } from "../../lib/api";
 import type { ActiveCitation } from "../../lib/types";
+import { CitationExcerptCard } from "../common/CitationExcerptCard";
+import { LoadingState } from "../common/LoadingState";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -63,7 +64,6 @@ export const PdfViewerPane: React.FC<PdfViewerPaneProps> = ({
       ? activeCitation.page_numbers[0]
       : null;
 
-  // Reset page to 1 when switching documents (unless activeCitation specifies a target page)
   useEffect(() => {
     if (citedPage && citedPage >= 1) {
       setPageNumber(citedPage);
@@ -73,7 +73,6 @@ export const PdfViewerPane: React.FC<PdfViewerPaneProps> = ({
     setUseNativeFallback(false);
   }, [docId, citedPage]);
 
-  // Jump to cited page and trigger pulse animation whenever activeCitation updates
   useEffect(() => {
     if (isCitedDoc && citedPage && citedPage >= 1) {
       setPageNumber(Math.min(citedPage, numPages || citedPage));
@@ -106,7 +105,6 @@ export const PdfViewerPane: React.FC<PdfViewerPaneProps> = ({
 
   return (
     <div className="flex h-full flex-col bg-slate-950">
-      {/* Page navigation sub-bar */}
       <div className="flex items-center justify-between border-b border-slate-800/80 bg-slate-900/60 px-3 py-1.5 text-xs">
         <div className="flex items-center gap-1.5">
           <button
@@ -164,7 +162,6 @@ export const PdfViewerPane: React.FC<PdfViewerPaneProps> = ({
         </div>
       </div>
 
-      {/* Viewer Canvas / Frame */}
       <div
         ref={containerRef}
         className="flex-1 overflow-auto p-4 flex flex-col items-center bg-slate-950/90"
@@ -194,10 +191,7 @@ export const PdfViewerPane: React.FC<PdfViewerPaneProps> = ({
                 setUseNativeFallback(true);
               }}
               loading={
-                <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-2">
-                  <Loader2 className="h-6 w-6 animate-spin text-indigo-400" />
-                  <span className="text-xs">Rendering PDF document...</span>
-                </div>
+                <LoadingState label="Rendering PDF document..." className="py-20" />
               }
             >
               <Page
@@ -212,25 +206,22 @@ export const PdfViewerPane: React.FC<PdfViewerPaneProps> = ({
           </div>
         )}
 
-        {/* Cited Excerpt Callout Overlay below PDF page when activeCitation matches */}
         {isCitedDoc && activeCitation?.excerpt && (
-          <div className="mt-4 w-full max-w-2xl rounded-xl border border-indigo-500/40 bg-indigo-950/40 p-3 text-xs text-indigo-100 shadow-lg">
-            <div className="flex items-center justify-between text-[11px] font-semibold text-indigo-300 mb-1">
-              <span>
+          <CitationExcerptCard
+            className="mt-4 w-full max-w-2xl shadow-lg"
+            title={
+              <>
                 Active Citation Excerpt
                 {activeCitation.heading_path
                   ? ` · §${activeCitation.heading_path}`
                   : ""}
-              </span>
-              {citedPage && <span>Page {citedPage}</span>}
-            </div>
-            <p className="text-slate-200 leading-relaxed italic">
-              "{activeCitation.excerpt}"
-            </p>
-          </div>
+              </>
+            }
+            rightMeta={citedPage ? `Page ${citedPage}` : undefined}
+            excerpt={activeCitation.excerpt}
+          />
         )}
       </div>
     </div>
   );
 };
-

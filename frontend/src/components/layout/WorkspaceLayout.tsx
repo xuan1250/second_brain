@@ -12,14 +12,16 @@ import {
   PanelRightOpen,
   Settings,
 } from "lucide-react";
+import { useActiveProviderStatus } from "../../hooks/useActiveProviderStatus";
 import { useSystemStats } from "../../hooks/useDocuments";
-import { useWorkspaceSettingsQuery } from "../../hooks/useDomains";
+import { useWorkspaceSettingsQuery } from "../../hooks/useWorkspaceSettings";
 import { useWorkspace } from "../../lib/workspaceStore";
 import { ChatAssistant } from "../chat/ChatAssistant";
 import { KnowledgeLibrary } from "../library/KnowledgeLibrary";
 import { DocumentInspector } from "../viewer/DocumentInspector";
 import { SettingsModal } from "../settings/SettingsModal";
 import { ErrorBoundary } from "../common/ErrorBoundary";
+import { StatusDot } from "../common/StatusDot";
 
 export const WorkspaceLayout: React.FC = () => {
   const leftPanelRef = useRef<ImperativePanelHandle | null>(null);
@@ -39,22 +41,12 @@ export const WorkspaceLayout: React.FC = () => {
   const { data: stats } = useSystemStats();
   const { data: wsSettings } = useWorkspaceSettingsQuery();
 
-  const activeProv =
-    selectedProvider ||
-    wsSettings?.default_llm_provider ||
-    stats?.llm?.provider ||
-    "openai";
-
-  const providers = wsSettings?.available_providers?.length
-    ? wsSettings.available_providers
-    : (stats?.available_providers ?? []);
-
-  const activeOption = providers.find((p) => p.provider === activeProv);
-  const isMissingKey = Boolean(activeOption && !activeOption.configured);
-  const isInvalidKey = Boolean(
-    activeOption && activeOption.validation_status === "invalid"
-  );
-  const hasProviderIssue = isMissingKey || isInvalidKey;
+  const { activeProv, activeOption, isInvalidKey, hasKeyIssue: hasProviderIssue } =
+    useActiveProviderStatus({
+      selectedProvider,
+      wsSettings,
+      stats,
+    });
 
   const toggleLeftPanel = () => {
     const panel = leftPanelRef.current;
@@ -131,12 +123,11 @@ export const WorkspaceLayout: React.FC = () => {
               }`}
               className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-slate-800 bg-slate-900/90 px-2.5 py-0.5 cursor-help"
             >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  isClassifierResident
-                    ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)] animate-pulse"
-                    : "bg-amber-400"
-                }`}
+              <StatusDot
+                tone={isClassifierResident ? "ok" : "warning"}
+                pulse={isClassifierResident}
+                glow={isClassifierResident}
+                size="sm"
               />
               <span className="font-medium text-slate-300">
                 🧠 Classifier: {classifierName}
@@ -174,10 +165,9 @@ export const WorkspaceLayout: React.FC = () => {
             <Settings className="h-3.5 w-3.5 text-indigo-400" />
             <span className="font-medium">Settings</span>
             {hasProviderIssue && (
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  isInvalidKey ? "bg-rose-500 animate-pulse" : "bg-amber-400"
-                }`}
+              <StatusDot
+                tone={isInvalidKey ? "error" : "warning"}
+                pulse={isInvalidKey}
               />
             )}
           </button>

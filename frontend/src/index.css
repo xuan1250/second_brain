@@ -21,6 +21,57 @@
   }
 }
 
+@layer components {
+  .markdown-prose-shared ul {
+    list-style-type: disc;
+  }
+
+  .markdown-prose-shared ol {
+    list-style-type: decimal;
+  }
+
+  .markdown-prose-shared li {
+    margin-top: 0.125rem;
+    margin-bottom: 0.125rem;
+  }
+
+  .markdown-prose-shared table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.75rem;
+    line-height: 1rem;
+  }
+
+  .markdown-prose-shared th {
+    border: 1px solid rgb(51 65 85);
+    background-color: rgb(15 23 42);
+    padding: 0.375rem 0.625rem;
+    text-align: left;
+    font-weight: 600;
+  }
+
+  .markdown-prose-shared td {
+    border: 1px solid rgb(30 41 59);
+    padding: 0.375rem 0.625rem;
+  }
+
+  .markdown-prose-shared pre {
+    border-radius: 0.5rem;
+    overflow-x: auto;
+  }
+
+  .markdown-prose-shared code {
+    border-radius: 0.25rem;
+    background-color: rgb(30 41 59);
+    padding: 0.125rem 0.25rem;
+  }
+
+  .markdown-prose-shared pre code {
+    background-color: transparent;
+    padding: 0;
+  }
+}
+
 @keyframes citation-pulse {
   0%, 100% {
     box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.65);
@@ -87,4 +138,3 @@
   inset: 0;
   pointer-events: none;
 }
-

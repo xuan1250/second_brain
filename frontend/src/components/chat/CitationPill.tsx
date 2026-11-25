@@ -1,16 +1,13 @@
 import React from "react";
-import type { Citation } from "../../lib/types";
-import { useWorkspace } from "../../lib/workspaceStore";
 import { useDomainsQuery } from "../../hooks/useDomains";
 import { resolveDomainMeta } from "../../lib/domainTheme";
+import { formatSubdomainLeaf } from "../../lib/format";
+import type { Citation } from "../../lib/types";
+import { useWorkspace } from "../../lib/workspaceStore";
 
 export interface CitationPillProps {
   index: number;
   citation?: Citation;
-}
-
-export function getCitationDomainColor(domain?: string | null) {
-  return resolveDomainMeta(domain).theme.citation;
 }
 
 export const CitationPill: React.FC<CitationPillProps> = ({
@@ -29,9 +26,8 @@ export const CitationPill: React.FC<CitationPillProps> = ({
   const colorCls = meta.theme.citation;
 
   const domainLabel = meta.name;
-  const subdomainLabel = citation?.subdomain
-    ? ` › ${citation.subdomain.split(".").pop()}`
-    : "";
+  const subLeaf = formatSubdomainLeaf(citation?.subdomain);
+  const subdomainLabel = subLeaf ? ` › ${subLeaf}` : "";
   const tierLabel = citation?.authority_tier
     ? ` · T${citation.authority_tier}`
     : "";
@@ -45,7 +41,9 @@ export const CitationPill: React.FC<CitationPillProps> = ({
 
   const tooltip = citation
     ? `[${index}] ${citation.source_filename || ""} (${domainLabel}${subdomainLabel}${tierLabel}${jurisLabel}${pageLabel})${
-        typeof citation.excerpt === "string" && citation.excerpt ? ` — "${citation.excerpt.slice(0, 140)}"` : ""
+        typeof citation.excerpt === "string" && citation.excerpt
+          ? ` — "${citation.excerpt.slice(0, 140)}"`
+          : ""
       }`
     : `Citation [${index}]`;
 

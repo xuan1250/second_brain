@@ -17,8 +17,8 @@ import {
   resumeIngestion,
   retryDocument,
   updateDocumentMetadata,
-  uploadDocuments,
 } from "../lib/api";
+import { invalidateDocumentQueries, queryKeys } from "../lib/queryKeys";
 import type {
   ApprovedClassificationRequest,
   DocumentItem,
@@ -34,7 +34,9 @@ const IN_PROGRESS_STATUSES = new Set([
   "processing",
 ]);
 
-export function isDocumentProcessing(doc: DocumentItem | null | undefined): boolean {
+export function isDocumentProcessing(
+  doc: DocumentItem | null | undefined
+): boolean {
   if (!doc) return false;
   const status = (doc.status || "").toLowerCase();
   const stage = (doc.stage || "").toLowerCase();
@@ -43,7 +45,7 @@ export function isDocumentProcessing(doc: DocumentItem | null | undefined): bool
 
 export function useDocuments(params: ListDocumentsParams = {}) {
   return useQuery({
-    queryKey: ["documents", params],
+    queryKey: queryKeys.documents(params),
     queryFn: () => fetchDocuments(params),
     refetchInterval: (query) => {
       const data = query.state.data;
@@ -59,7 +61,7 @@ export function useDocument(docId: string | null) {
   const prevStatusRef = useRef<string | null>(null);
 
   const query = useQuery({
-    queryKey: ["document", docId],
+    queryKey: queryKeys.document(docId),
     queryFn: () => {
       if (!docId) throw new Error("No document ID");
       return fetchDocument(docId);
@@ -81,7 +83,7 @@ export function useDocument(docId: string | null) {
       currentStatus.toLowerCase() === "ready"
     ) {
       void queryClient.invalidateQueries({
-        queryKey: ["document-markdown", docId],
+        queryKey: queryKeys.documentMarkdown(docId),
       });
     }
     prevStatusRef.current = currentStatus;
@@ -92,41 +94,13 @@ export function useDocument(docId: string | null) {
 
 export function useDocumentMarkdown(docId: string | null, enabled = true) {
   return useQuery({
-    queryKey: ["document-markdown", docId],
+    queryKey: queryKeys.documentMarkdown(docId),
     queryFn: () => {
       if (!docId) throw new Error("No document ID");
       return fetchDocumentMarkdown(docId);
     },
     enabled: Boolean(docId) && enabled,
     retry: 1,
-  });
-}
-
-export type UploadDocumentsVariables =
-  | File[]
-  | {
-      files: File[];
-      preferFastPath?: boolean | null;
-      approvalMode?: "review_all" | "auto_high_confidence" | "auto_all";
-    };
-
-export function useUploadDocumentsMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (variables: UploadDocumentsVariables) => {
-      if (Array.isArray(variables)) {
-        return uploadDocuments(variables);
-      }
-      return uploadDocuments(
-        variables.files,
-        variables.preferFastPath,
-        variables.approvalMode
-      );
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
-    },
   });
 }
 
@@ -141,14 +115,7 @@ export function useApproveClassificationMutation() {
       payload?: ApprovedClassificationRequest;
     }) => approveClassification(docId, payload),
     onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({
-        queryKey: ["document", variables.docId],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["document-markdown", variables.docId],
-      });
-      void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
+      invalidateDocumentQueries(queryClient, variables.docId);
     },
   });
 }
@@ -158,8 +125,7 @@ export function useApproveBatchMutation() {
   return useMutation({
     mutationFn: (docIds: string[]) => approveBatchClassifications(docIds),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
+      invalidateDocumentQueries(queryClient);
     },
   });
 }
@@ -175,14 +141,7 @@ export function useUpdateDocumentMetadataMutation() {
       payload: UpdateDocumentMetadataRequest;
     }) => updateDocumentMetadata(docId, payload),
     onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({
-        queryKey: ["document", variables.docId],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["document-markdown", variables.docId],
-      });
-      void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
+      invalidateDocumentQueries(queryClient, variables.docId);
     },
   });
 }
@@ -192,26 +151,32 @@ export function useDeleteDocumentMutation() {
   return useMutation({
     mutationFn: (docId: string) => deleteDocument(docId),
     onSuccess: (_data, docId) => {
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["document", docId] });
-      void queryClient.invalidateQueries({
-        queryKey: ["document-markdown", docId],
-      });
-      void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
+      invalidateDocumentQueries(queryClient, docId);
     },
   });
 }
 
+export const DEFAULT_STATS_POLL_MS = 10_000;
+export const FAST_STATS_POLL_MS = 2_000;
+
 export interface UseSystemStatsOptions {
   refetchInterval?: number | false;
+  fastPoll?: boolean;
 }
 
 export function useSystemStats(options?: UseSystemStatsOptions) {
+  const interval =
+    options?.refetchInterval !== undefined
+      ? options.refetchInterval
+      : options?.fastPoll
+      ? FAST_STATS_POLL_MS
+      : DEFAULT_STATS_POLL_MS;
+
   return useQuery({
-    queryKey: ["system-stats"],
+    queryKey: queryKeys.systemStats(),
     queryFn: () => fetchSystemStats(),
     staleTime: 5000,
-    refetchInterval: options?.refetchInterval ?? 10000,
+    refetchInterval: interval,
   });
 }
 
@@ -226,12 +191,7 @@ export function useRetryDocumentMutation() {
       options?: { forceReparse?: boolean; preferFastPath?: boolean };
     }) => retryDocument(docId, options),
     onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["document", variables.docId] });
-      void queryClient.invalidateQueries({
-        queryKey: ["document-markdown", variables.docId],
-      });
-      void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
+      invalidateDocumentQueries(queryClient, variables.docId);
     },
   });
 }
@@ -241,7 +201,7 @@ export function usePauseIngestionMutation() {
   return useMutation({
     mutationFn: () => pauseIngestion(),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.systemStats() });
     },
   });
 }
@@ -251,7 +211,7 @@ export function useResumeIngestionMutation() {
   return useMutation({
     mutationFn: () => resumeIngestion(),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["system-stats"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.systemStats() });
     },
   });
 }
