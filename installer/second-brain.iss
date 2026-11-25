@@ -3,11 +3,12 @@
 
 #define MyAppName "Second Brain"
 #define MyAppVersion "0.1.0"
+#define MyAppId "{{B7D8F2E4-4F1D-4C2B-9A3E-7C6B9B4E2A10}"
 #define MyAppPublisher "Second Brain"
 #define MyEntryRelPath "app\installer\launcher_entry.py"
 
 [Setup]
-AppId={{B7D8F2E4-4F1D-4C2B-9A3E-7C6B9B4E2A10}
+AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -95,7 +96,7 @@ const
   WEBVIEW2_DOWNLOAD_URL = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
   VCREDIST_DOWNLOAD_URL = 'https://aka.ms/vs/17/release/vc_redist.x64.exe';
   DESKTOP_MUTEX_NAME = 'Local\SecondBrainDesktopMutex';
-  UNINSTALL_REG_SUBKEY = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{B7D8F2E4-4F1D-4C2B-9A3E-7C6B9B4E2A10}_is1';
+  UNINSTALL_REG_SUBKEY = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#StringChange(MyAppId, '{{', '{')}_is1';
 
 var
   HwPage: TWizardPage;
