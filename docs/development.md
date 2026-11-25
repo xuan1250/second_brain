@@ -103,7 +103,7 @@ Settings are loaded by [`src/config.py`](../backend/src/config.py) (`load_settin
 
 To find every variable the backend reads: `rg "environ" backend/src`.
 
-Supported LLM provider names and aliases are defined in `src/rag/llm.py` (`_SUPPORTED_INIT_PROVIDERS`, `_OPENAI_COMPATIBLE_PROVIDERS`); any provider with a `base_url` is routed through the OpenAI-compatible client.
+Supported LLM provider names and aliases are defined in [`src/core/credentials.py`](../backend/src/core/credentials.py) (re-exported by [`src/rag/llm.py`](../backend/src/rag/llm.py): `_SUPPORTED_INIT_PROVIDERS`, `_OPENAI_COMPATIBLE_PROVIDERS`); any provider with a `base_url` is routed through the OpenAI-compatible client.
 
 ## Batch ingestion (CLI)
 
@@ -135,6 +135,8 @@ To validate worker self-healing, fast-path heuristics, pre-upsert relational bar
 ```bash
 cd backend
 uv run pytest tests/unit/test_batch_resilience.py tests/integration/test_concurrency_stress.py -v
+# On Windows host with Application Control policy:
+.\.venv\Scripts\python.exe -m pytest --noconftest tests/unit/test_batch_resilience.py tests/integration/test_concurrency_stress.py -v
 ```
 
 - [`tests/unit/test_batch_resilience.py`](../backend/tests/unit/test_batch_resilience.py): Unit tests for `BrokenProcessPool` worker crash recovery, pre-upsert SQLite existence barriers, compensating Qdrant rollback on partial failure, in-flight cancellation flags, PyMuPDF digital vs scanned fast-path heuristics, retry chunk/point pre-purge invariance, and concurrent duplicate upload `IntegrityError` race handling.
