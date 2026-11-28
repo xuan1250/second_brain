@@ -30,6 +30,7 @@ from src.api.main import create_app
 from src.config import get_settings
 from src.db.models import Document
 from src.db.session import create_engine, create_session_factory, init_db
+from src.ingestion.classifier import set_classifier_force_stub
 from src.ingestion.indexer import (
     DeterministicBM25Encoder,
     DeterministicStubEmbedder,
@@ -98,6 +99,7 @@ async def modes_client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
 
     get_settings.cache_clear()
+    set_classifier_force_stub(True)
     set_embedder(DeterministicStubEmbedder(dimensions=STUB_DIM))
     set_sparse_encoder(DeterministicBM25Encoder())
     set_chat_model(None)
@@ -111,6 +113,7 @@ async def modes_client(tmp_path: Path, monkeypatch):
             client.app = test_app
             yield client, data_dir
 
+    set_classifier_force_stub(False)
     set_chat_model(None)
     set_embedder(None)
     set_sparse_encoder(None)
@@ -131,6 +134,8 @@ async def _wait_for_document_ready(
         last_payload = resp.json()
         if last_payload["status"] in ("ready", "failed"):
             return last_payload
+        if last_payload["status"] == "awaiting_approval":
+            await client.post(f"/api/v1/documents/{doc_id}/approve-classification", json={})
         await asyncio.sleep(0.05)
     raise AssertionError(f"Document {doc_id} did not reach ready status in time: {last_payload}")
 

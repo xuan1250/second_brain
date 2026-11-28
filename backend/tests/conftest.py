@@ -20,6 +20,7 @@ from qdrant_client import AsyncQdrantClient
 from src.api.main import create_app
 from src.config import get_settings
 from src.db.session import close_engine, create_engine, create_session_factory, init_db
+from src.ingestion.classifier import set_classifier_force_stub
 from src.ingestion.indexer import (
     DeterministicBM25Encoder,
     DeterministicStubEmbedder,
@@ -348,6 +349,7 @@ async def e2e_api_client(
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds-e2e-offline-key")
 
     get_settings.cache_clear()
+    set_classifier_force_stub(True)
     set_embedder(stub_embedder)
     set_sparse_encoder(stub_sparse_encoder)
     set_reranker(stub_reranker)
@@ -360,6 +362,7 @@ async def e2e_api_client(
         async with AsyncClient(transport=transport, base_url="http://testserver") as client:
             yield client, data_dir, app
 
+    set_classifier_force_stub(False)
     set_chat_model(None)
     set_embedder(None)
     set_sparse_encoder(None)

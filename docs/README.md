@@ -13,5 +13,6 @@ Start here. Each document owns one information role; source and tests own behavi
 | [assets/langgraph-crag-workflow.svg](assets/langgraph-crag-workflow.svg) | High-resolution SVG architecture diagram of the 7-node LangGraph CRAG workflow with all sub-modes |
 | [code-review-report.md](code-review-report.md) | Full codebase comprehensive audit: findings, verification evidence, edge case evaluation, and recommendations |
 | [Local engineering PDF extraction research](research/2026-11-15-local-engineering-pdf-extraction.md) | Proposed local model routes for engineering PDFs on an 8GB GPU, evidence limits, integration options, and evaluation criteria; not implemented architecture |
+| [HuggingFace PDF-to-Markdown VLMs research](research/2026-11-25-huggingface-pdf-to-markdown-vlms.md) | Survey and OmniDocBench comparison of compact specialized VLMs and parallel parsing pipelines (OXR-1.0, DeepSeek-OCR 2, MinerU 2.5-Pro, HPD-Parsing) for PDF-to-Markdown conversion |
 
 

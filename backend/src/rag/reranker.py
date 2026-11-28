@@ -12,6 +12,7 @@ import flashrank
 from flashrank import RerankRequest
 
 from src.config import get_settings
+from src.rag.qdrant_filters import normalize_page_numbers
 
 __all__ = [
     "FlashRankReranker",
@@ -71,11 +72,7 @@ def deduplicate_parent_chunks(
         domain = str(chunk.get("domain") or "general")
         parent_content = str(chunk.get("parent_content") or chunk.get("child_text") or "").strip()
         chunk_id = str(chunk.get("chunk_id") or "")
-        pages = [
-            int(p)
-            for p in (chunk.get("page_numbers") or [])
-            if isinstance(p, (int, str)) and str(p).isdigit()
-        ]
+        pages = normalize_page_numbers(chunk.get("page_numbers"))
         parent_key = (doc_id, domain, parent_content)
 
         if parent_content and parent_key in index_by_parent_key:

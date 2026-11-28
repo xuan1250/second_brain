@@ -7,11 +7,12 @@ import os
 import shutil
 import socket
 import sys
-import tempfile
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
+
+from src.desktop.io_utils import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -201,33 +202,18 @@ class DesktopPaths:
             return self.app_dir / "app" / "frontend" / "dist"
         return self.app_dir / "frontend" / "dist"
 
-    @property
-    def qdrant_exe(self) -> Path:
-        exe_name = "qdrant.exe" if sys.platform == "win32" else "qdrant"
+    def _bin_exe(self, exe_stem: str) -> Path:
+        exe_name = f"{exe_stem}.exe" if sys.platform == "win32" else exe_stem
         staged_bin = self.app_dir / "bin" / exe_name
         if self.is_staged_install or staged_bin.exists():
             return staged_bin
-        alt_exe = self.app_dir / "bin" / "qdrant.exe"
+        alt_exe = self.app_dir / "bin" / f"{exe_stem}.exe"
         if alt_exe.exists():
             return alt_exe
-        found = shutil.which("qdrant")
+        found = shutil.which(exe_stem)
         return Path(found) if found else staged_bin
 
-    @property
-    def uv_exe(self) -> Path:
-        exe_name = "uv.exe" if sys.platform == "win32" else "uv"
-        staged_bin = self.app_dir / "bin" / exe_name
-        if self.is_staged_install or staged_bin.exists():
-            return staged_bin
-        alt_exe = self.app_dir / "bin" / "uv.exe"
-        if alt_exe.exists():
-            return alt_exe
-        found = shutil.which("uv")
-        return Path(found) if found else staged_bin
-
-    @property
-    def base_venv_python(self) -> Path:
-        rel = _venv_python_relpath()
+    def _venv_python(self, rel: Path) -> Path:
         staged_py = self.app_dir / "venv" / rel
         if self.is_staged_install or staged_py.exists() or (self.app_dir / "venv").is_dir():
             return staged_py
@@ -237,15 +223,20 @@ class DesktopPaths:
         return staged_py
 
     @property
+    def qdrant_exe(self) -> Path:
+        return self._bin_exe("qdrant")
+
+    @property
+    def uv_exe(self) -> Path:
+        return self._bin_exe("uv")
+
+    @property
+    def base_venv_python(self) -> Path:
+        return self._venv_python(_venv_python_relpath())
+
+    @property
     def base_venv_pythonw(self) -> Path:
-        rel = _venv_pythonw_relpath()
-        staged_pyw = self.app_dir / "venv" / rel
-        if self.is_staged_install or staged_pyw.exists() or (self.app_dir / "venv").is_dir():
-            return staged_pyw
-        dev_pyw = self.backend_dir / ".venv" / rel
-        if dev_pyw.exists():
-            return dev_pyw
-        return staged_pyw
+        return self._venv_python(_venv_pythonw_relpath())
 
     @property
     def cuda_venv_python(self) -> Path:
@@ -356,33 +347,7 @@ def save_desktop_config(config: DesktopConfig, paths: DesktopPaths | None = None
     """Atomically persist `DesktopConfig` to `desktop_config.json` via temp file + `os.replace`."""
     resolved_paths = paths or DesktopPaths()
     resolved_paths.config_dir.mkdir(parents=True, exist_ok=True)
-    cfg_path = resolved_paths.config_path
-    payload = config.model_dump_json(indent=2) + "\n"
-
-    tmp_path: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=str(resolved_paths.config_dir),
-            prefix=".desktop_config_",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp_file:
-            tmp_path = tmp_file.name
-            tmp_file.write(payload)
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
-        os.replace(tmp_path, cfg_path)
-    except Exception:
-        if tmp_path:
-            try:
-                Path(tmp_path).unlink(missing_ok=True)
-            except OSError:
-                pass
-        raise
-
-    return cfg_path
+    return atomic_write_json(resolved_paths.config_path, config, fsync=True)
 
 
 def find_free_loopback_port(preferred_port: int) -> int:

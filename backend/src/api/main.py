@@ -13,11 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from qdrant_client import AsyncQdrantClient
 
-from src.api.routes import chat, documents, domains, system
+from src.api.routes import chat, documents, domains, settings as settings_routes, system
 from src.config import get_settings, load_settings
-from src.db import session as db_session_mod
 from src.db.qdrant import backfill_qdrant_legacy_payloads, get_qdrant_client, init_qdrant_collection
-from src.db.session import close_engine, create_engine, create_session_factory, init_db
+from src.db.session import close_engine, create_engine, create_session_factory, init_db, set_engine_state
 from src.ingestion.indexer import (
     BgeM3SparseEncoder,
     check_collection_sparse_mode_compatibility,
@@ -83,9 +82,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = create_engine(settings.sqlite_url)
     await init_db(engine)
     session_factory = create_session_factory(engine)
-    db_session_mod._engine = engine
-    db_session_mod._engine_url = settings.sqlite_url
-    db_session_mod._factory = session_factory
+    set_engine_state(engine, settings.sqlite_url, session_factory)
 
     # 3. Resolve shared main-process embedder, sparse encoder, and FlashRank reranker
     embedder = get_embedder()
@@ -205,6 +202,7 @@ def create_app() -> FastAPI:
 
     application.include_router(documents.router, prefix="/api/v1")
     application.include_router(domains.router, prefix="/api/v1")
+    application.include_router(settings_routes.router, prefix="/api/v1")
     application.include_router(chat.router, prefix="/api/v1")
     application.include_router(system.router, prefix="/api/v1")
 

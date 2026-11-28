@@ -24,6 +24,8 @@ from qdrant_client import AsyncQdrantClient
 from src.ingestion.worker import IngestionOrchestrator
 from src.rag.retriever import HybridRetriever
 
+pytest_plugins = ["tests.conftest"]
+
 
 def _create_digital_pdf(target_path: Path, index: int) -> bytes:
     """Deterministic digital text PDF (> 120 chars/page, 0 images) for fast-path routing."""
@@ -89,6 +91,7 @@ async def _poll_batch_completion(
     deadline = asyncio.get_running_loop().time() + timeout_s
     results: dict[str, dict[str, Any]] = {}
     pending = set(doc_ids)
+    approved: set[str] = set()
 
     while pending and asyncio.get_running_loop().time() < deadline:
         for doc_id in list(pending):
@@ -101,6 +104,12 @@ async def _poll_batch_completion(
                 if payload.get("status") in ("ready", "failed"):
                     results[doc_id] = payload
                     pending.remove(doc_id)
+                elif payload.get("status") == "awaiting_approval" and doc_id not in approved:
+                    approved.add(doc_id)
+                    await client.post(
+                        f"/api/v1/documents/{doc_id}/approve-classification",
+                        json={},
+                    )
         if pending:
             await asyncio.sleep(0.1)
 

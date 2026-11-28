@@ -37,15 +37,8 @@ async def init_qdrant_collection(
                 vectors_config={DENSE: models.VectorParamsDiff(on_disk=True)},
                 hnsw_config=models.HnswConfigDiff(on_disk=True),
             )
-        except Exception:
-            try:
-                await client.update_collection(
-                    collection_name=collection,
-                    vectors_config=models.VectorParamsDiff(on_disk=True),
-                    hnsw_config=models.HnswConfigDiff(on_disk=True),
-                )
-            except Exception as exc:
-                warnings.warn(f"Failed or skipped updating on_disk config for collection '{collection}': {exc}", stacklevel=2)
+        except Exception as exc:
+            warnings.warn(f"Failed or skipped updating on_disk config for collection '{collection}': {exc}", stacklevel=2)
 
     # Core indices + multi-domain partitioned indices
     payload_indexes: list[tuple[str, models.PayloadSchemaType]] = [

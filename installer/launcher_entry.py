@@ -7,6 +7,8 @@ import os
 import sys
 from pathlib import Path
 
+# Kept standalone rather than importing src.desktop.win32_window because this
+# entrypoint sets AUMID before _configure_runtime_paths() adds backend/ to sys.path.
 DESKTOP_APP_USER_MODEL_ID = "SecondBrain.Desktop.App"
 
 
